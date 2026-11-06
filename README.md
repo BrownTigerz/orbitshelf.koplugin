@@ -31,6 +31,32 @@ OrbitShelf is a KOReader plugin that connects [Bookshelf](https://github.com/And
 
 ![OrbitShelf settings](images/orbitshelf-menu.png)
 
+## Screenshots
+
+![Offline Library](images/orbitshelf-offline-library.png)
+
+Offline Library keeps every book's cover and details on the device — 130 of 130 books here.
+
+![Check For New Books](images/orbitshelf-check-new-books.png)
+
+Check For New Books: On Wi-Fi Connect, On Refresh / Sync, Both, or Update Now Only.
+
+![Hold menu](images/orbitshelf-hold-menu.png)
+
+Hold a BookOrbit book for Download, Open In BookOrbit, or its Book Description.
+
+![Book Description](images/orbitshelf-book-description.png)
+
+The Book Description popup, sized to the text.
+
+![Downloaded](images/orbitshelf-downloaded.png)
+
+Downloaded — open it now or later.
+
+![On-device book](images/orbitshelf-hero-on-device.png)
+
+A book on the device gets small Remove, Open In BookOrbit, and Sync icons instead.
+
 ---
 
 ## Install
