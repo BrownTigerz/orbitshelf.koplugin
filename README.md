@@ -10,7 +10,7 @@ OrbitShelf is a KOReader plugin that connects [Bookshelf](https://github.com/And
 |---|---|
 | **Version** | 1.2.5 |
 | **KOReader** | v2026.07 or newer |
-| **Needs** | [bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin) (source API 1; Bookshelf 6.x recommended) and bookorbit.koplugin, signed in |
+| **Needs** | [bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin) (Bookshelf 6.x recommended) and bookorbit.koplugin, signed in |
 | **Optional** | SimpleUI (for the footer critter) |
 | **Tested on** | Kobo Clara Colour |
 
