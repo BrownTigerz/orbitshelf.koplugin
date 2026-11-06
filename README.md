@@ -8,7 +8,7 @@ OrbitShelf is a KOReader plugin that connects [Bookshelf](https://github.com/And
 
 | | |
 |---|---|
-| **Version** | 1.2.4 |
+| **Version** | 1.2.5 |
 | **KOReader** | v2026.07 or newer |
 | **Needs** | [bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin) (source API 1; Bookshelf 6.x recommended) and bookorbit.koplugin, signed in |
 | **Optional** | SimpleUI (for the footer critter) |
@@ -127,7 +127,7 @@ OrbitShelf writes to KOReader's `crash.log` (`.adds/koreader/crash.log` on Kobo)
 - A part that failed, with where. Bookshelf's own version runs instead, so the screen doesn't break.
 - Another patch or plugin that changed a Bookshelf function OrbitShelf uses, or replaced the BookOrbit shelf source, named by file. For example:
   ```
-  orbitshelf 1.2.4: Bookshelf.onHold (hero hold menu) was changed after OrbitShelf by plugins/other.koplugin/main.lua
+  orbitshelf 1.2.5: Bookshelf.onHold (hero hold menu) was changed after OrbitShelf by plugins/other.koplugin/main.lua
   ```
 
 **For more detail**, turn on **Diagnostics**, reproduce the problem within 30 minutes, then share `crash.log`. Diagnostics lines are tagged `orbitshelf <version> diag:`.
@@ -171,6 +171,7 @@ orbitshelf.koplugin/
 
 The full history is at the top of `main.lua`.
 
+- **1.2.5:** Reports show BookOrbit's version; Diagnostics lists every setting.
 - **1.2.4:** Check For New Books option. README.
 - **1.2.3:** Fixed a crash when scrolling a long description, and the screen freezing during lookups.
 - **1.2.2:** Lookups three at a time; fewer shelf redraws.

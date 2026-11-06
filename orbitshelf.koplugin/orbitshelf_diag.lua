@@ -315,9 +315,23 @@ local function snapshot(why)
         q(bs and bs.SOURCE_API))
     log("BookOrbit installed: %s | signed in: %s",
         q(bookOrbitInstalled()), q(bookOrbitSignedIn()))
-    log("settings: use_bookorbit=%s auto_rewrite=%s hero_pills=%s close_only=%s close_side=%s",
-        q(c.use_bookorbit), q(c.auto_rewrite_stock), q(c.hero_pills),
-        q(c.close_only_menu), q(c.close_menu_side))
+    -- every OrbitShelf setting (none of them is private), sorted
+    do
+        local keys = {}
+        for k in pairs(O.cfg) do keys[#keys + 1] = k end
+        table.sort(keys)
+        local parts = {}
+        for _i, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. tostring(O.cfg[k]) end
+        log("settings: %s", table.concat(parts, " "))
+    end
+    -- what's running in the background right now
+    pcall(function()
+        local G = O.Genres
+        local saved = O.Offline and O.cfg.offline_library and O.Offline.count() or 0
+        local library = G and G.library and G.library() or {}
+        log("library: %d books in the saved list | offline saved: %d | genres running=%s paused=%s",
+            #library, saved, q(G and G.running), q(G and G.paused))
+    end)
     pcall(function()
         local TM = package.loaded.tweaks_mods
         local entry = type(TM) == "table" and type(TM.entries) == "table" and TM.entries.orbitshelf_tweaks

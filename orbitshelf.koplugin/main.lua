@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.4
+Version: 1.2.5
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.4:". At start it writes the
+Problems go to crash.log, tagged "orbitshelf 1.2.5:". At start it writes the
 KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
 patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -84,6 +84,11 @@ orbitshelf_footer.lua (critter, close X), orbitshelf_menu.lua (settings menu),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  1.2.5  2026-11-05  Reports: the start-up line now shows BookOrbit's version (read from its
+                     main.lua; it has none in _meta.lua), and the Diagnostics snapshot lists
+                     every OrbitShelf setting plus the saved library size, how many books
+                     Offline Library has saved, and whether a lookup run is going. No
+                     change to how OrbitShelf works.
   1.2.4  2026-11-05  Offline Library > Check For New Books: On Wi-Fi Connect (default, as
                      before: at start and each Wi-Fi connect), On Refresh / Sync (the hero's
                      Sync button or a swipe-down refresh on a BookOrbit shelf, with the

@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "1.2.4"
+local VERSION = "1.2.5"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -226,6 +226,18 @@ local function readVersion(path)
     return text:match('version%s*=%s*"([^"]+)"') or text:match("Version:?%s*v?([%d%.]+)")
 end
 
+-- a plugin's version: its _meta.lua, or (BookOrbit and others keep it there) the
+-- PLUGIN_VERSION / VERSION line in its main.lua
+local function pluginVersion(dir)
+    local v = readVersion("plugins/" .. dir .. "/_meta.lua")
+    if v then return v end
+    local f = io.open("plugins/" .. dir .. "/main.lua", "r")
+    if not f then return nil end
+    local text = f:read("*a") or ""
+    f:close()
+    return text:match('PLUGIN_VERSION%s*=%s*"([^"]+)"') or text:match('[^%w_]VERSION%s*=%s*"([^"]+)"')
+end
+
 -- Diagnostics: the file is run only while the switch is on
 function O.startDiag(fresh)
     if fresh then os.remove(require("datastorage"):getDataDir() .. "/orbitshelf-plugin-diagnostics.state") end
@@ -243,7 +255,7 @@ function O.environment()
         local okV, Version = pcall(require, "version")
         local kor = okV and Version.getCurrentRevision and Version:getCurrentRevision() or "?"
         local model = Device.model or (Device.getDeviceModel and Device:getDeviceModel()) or "?"
-        local function plug(dir) return readVersion("plugins/" .. dir .. "/_meta.lua") end
+        local function plug(dir) return pluginVersion(dir) end
         logger.info(TAG, string.format("KOReader %s on %s; Bookshelf %s, BookOrbit %s, SimpleUI %s",
             tostring(kor), tostring(model),
             plug("bookshelf.koplugin") or (lfs.attributes("plugins/bookshelf.koplugin", "mode") and "?" or "not installed"),
