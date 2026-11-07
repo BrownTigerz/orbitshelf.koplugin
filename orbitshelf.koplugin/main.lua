@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.5
+Version: 1.2.20
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.5:". At start it writes the
+Problems go to crash.log, tagged "orbitshelf 1.2.20:". At start it writes the
 KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
 patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -81,9 +81,91 @@ crash.log), orbitshelf_bookorbit.lua (BookOrbit lists, covers, offline details,
 download / remove), orbitshelf_genres.lua (background lookups), orbitshelf_source.lua
 (the Bookshelf source and its shelves), orbitshelf_hero.lua (hero buttons, flash),
 orbitshelf_footer.lua (critter, close X), orbitshelf_menu.lua (settings menu),
+orbitshelf_collections.lua (Add To Collection),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  1.2.20 2026-11-06  Genres / Offline Library look books up two batches at a time (was three):
+                     about the same speed, less battery.
+  1.2.19 2026-11-06  A new BookOrbit shelf is named after its list (Authors, Recently added,
+                     the collection's name …) instead of "BookOrbit", and the name follows
+                     when you change the list, as long as you haven't typed your own. Flash
+                     for popups now flashes only the popup's box, not the whole screen.
+  1.2.18 2026-11-06  The BookOrbit source goes straight into Bookshelf's source list at
+                     start-up, without waiting for Bookshelf's window (older Bookshelf: as
+                     before). Background results keep every digit of a number, and a NaN or
+                     infinity no longer loses the whole result. The offline file is tidied
+                     after any run, not only after Offline Library. Diagnostics says how
+                     the source was registered.
+  1.2.17 2026-11-06  Covers download in OrbitShelf's background worker (BookOrbit's
+                     runInSubprocess ran them on the screen's thread: a few seconds' freeze
+                     per batch of new covers). Saved lists moved from KOReader's settings to
+                     koreader/orbitshelf-lists.lua, written only when changed, when KOReader
+                     saves its settings; moved over once. A background refresh that finds
+                     the same list only updates its age. Worker checks every 0.5 s for the
+                     first 2 s, then every second. A shelf refresh, download or cover fetch
+                     cut off by sleep no longer stays blocked until a restart.
+  1.2.16 2026-11-06  New Flash menu with every flash option, each off by default: Hero When
+                     It Changes (and how often), Shelf Page Turns (both moved from Hero and
+                     Shelf, settings kept), and new ones that flash a popup when it opens
+                     and closes: Book Description, Hold Menu (BookOrbit books), Download
+                     Window, Bookshelf's Book Menu, Shelf Editor. Bookshelf's two are
+                     hooked only once turned on.
+  1.2.15 2026-11-06  Add To Collection: "Signing in…" and "Loading your collections…" show
+                     as a plain KOReader message. BookOrbit's loading pill (tinted by
+                     BookOrbit Tweaks' Pill Colour) stayed on the shelf as a blank bar
+                     until the shelf redrew; 1.2.14's extra refresh didn't clear it and
+                     is gone. Same as BookOrbit Tweaks 2.15.10.
+  1.2.14 2026-11-06  Add To Collection: after typing the password, the collection list does
+                     one clean refresh, so no blank pill is left at the bottom of the
+                     screen. Same fix as BookOrbit Tweaks 2.15.9.
+  1.2.13 2026-11-06  Menu: Return To (the shelf Bookshelf shows when it opens or a book
+                     closes: Bookshelf's Choice, the default, or one you pick), then
+                     Add To Collection, Offline Library, Hero, Shelf, Footer.
+                     Hero buttons: text centred on its capitals, and a long label is only
+                     shortened when the row doesn't fit (it used to get an equal share).
+  1.2.12 2026-11-06  Add To Collection (setting, off by default): in the hero's hold menu
+                     and the Not On Device window. Signs in like the BookOrbit website,
+                     with the same messages, notice and saved password (encrypted) as
+                     BookOrbit Tweaks, and the same files, so the two share one login.
+                     With BookOrbit Tweaks 2.15.8 or newer installed, its picker opens.
+  1.2.11 2026-11-06  Hero: the pills and the status line use the hero's own font (they were
+                     in the UI serif). The status line sits next to the stars only when
+                     the hero has a rating row; otherwise (list view) it sits right-
+                     aligned just above the buttons, inset from the frame edge.
+                     Cleanup: dead code, unused locals and duplicate helpers removed
+                     (Diagnostics uses the plugin's own checks); no change in behaviour.
+  1.2.10 2026-11-06  Hero > Flash: Every Change / Every 4th / Every 6th (with Flash When It
+                     Changes on; Every Change, as before, by default), so most taps skip the
+                     slow full flash. A saved list over 30 minutes old shows at once and is
+                     refreshed in the background worker, redrawing the shelf only if it
+                     changed (it used to wait about 1 s on the network). Diagnostics count
+                     the saved lists under the right settings key (it always said 0).
+  1.2.9  2026-11-06  Corner notes fit on one line: shorter wording, and anything over about
+                     45 characters is cut with an ellipsis (the Group By note ran off the
+                     screen). Diagnostics time a tap on a book: the whole hero swap, and
+                     the hero column split into Bookshelf's own build and OrbitShelf's part
+                     (first 15, then slow ones), to find where taps feel sluggish.
+  1.2.8  2026-11-06  Group By (shelf editor, off by default): a Library, Collection or Smart
+                     Scope shelf can show its own books as Series, Authors or Genres
+                     folders (only that list's books, ordered like the main Series /
+                     Authors / Genres shelves). None keeps the flat A to Z list. Changing
+                     List to a whole-library mode clears it.
+  1.2.7  2026-11-06  Libraries: each BookOrbit library can be its own shelf (Library: <name>,
+                     in the shelf picker and the editor's List row), so a library per genre
+                     becomes a shelf per genre; saved for when Wi-Fi is off. Picking a
+                     library, collection or smart scope clears the others.
+  1.2.6  2026-11-06  Smart Scopes: BookOrbit's smart scopes can be a shelf, picked like a
+                     collection (Smart Scope: <name>, in the shelf picker and the editor's
+                     List row); saved for when Wi-Fi is off. Downloads: the detail call,
+                     the download and the hash check run in OrbitShelf's background worker
+                     with a corner note, instead of BookOrbit's loading pill over the
+                     footer and a download on the screen's thread (the pill and the shelf
+                     glitched while it ran). Linking the file to BookOrbit runs in the
+                     worker too. A second tap on the same book doesn't start another.
+                     Shelf > Search BookOrbit (off by default): Bookshelf's search looks in
+                     BookOrbit instead of the device; results open like a folder ("BookOrbit:
+                     <query>"), back returns. Wi-Fi off: the saved library list is searched.
   1.2.5  2026-11-05  Reports: the start-up line now shows BookOrbit's version (read from its
                      main.lua; it has none in _meta.lua), and the Diagnostics snapshot lists
                      every OrbitShelf setting plus the saved library size, how many books
@@ -156,6 +238,7 @@ local OrbitShelf = WidgetContainer:extend{
 if O.idle then return OrbitShelf end
 
 require("orbitshelf_bookorbit")
+require("orbitshelf_collections")
 require("orbitshelf_genres")
 require("orbitshelf_source")
 require("orbitshelf_hero")
@@ -190,6 +273,16 @@ local function boot()
     end
     step("hero", O.hookHero)
     step("flash", O.hookFlash)
+    step("popup flash", O.hookPopupFlash)
+    step("BookOrbit search", O.hookSearch)
+    -- Return To shelf (off by default): Bookshelf's instance may come a moment later
+    if cfg.return_shelf then
+        local ok, done = pcall(O.hookReturnShelf)
+        if not (ok and done) then
+            UIManager:scheduleIn(1, function() step("Return To shelf", O.hookReturnShelf) end)
+            UIManager:scheduleIn(3, function() step("Return To shelf", O.hookReturnShelf) end)
+        end
+    end
     -- Offline Library: new books since last time, quietly, once shortly after start
     if cfg.offline_library and O.Genres.autoOn("wifi") then
         UIManager:scheduleIn(20, function()
@@ -230,6 +323,12 @@ end
 -- going to sleep: the background lookups stop (they carry on when Wi-Fi is back)
 function OrbitShelf:onSuspend()
     if O.Genres.running then step("sleep", O.Genres.stop, true) end
+    step("save lists", O.flushPageCache)
+end
+
+-- KOReader saving its settings (closing a book, exit, sleep): the saved lists, if changed
+function OrbitShelf:onFlushSettings()
+    step("save lists", O.flushPageCache)
 end
 
 return OrbitShelf

@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "1.2.5"
+local VERSION = "1.2.20"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -42,9 +42,19 @@ local DEFAULTS = {
     critter_say_recs = true,       -- picks from the books on this page
     critter_say_quotes = true,     -- shelf sayings (plus your own file)
     flash_hero = false,            -- flash the hero clean when it shows another book
+    flash_hero_every = 1,          -- with flash_hero: flash every Nth hero change (1 = every one)
     flash_shelf = false,           -- flash the shelf clean on every page turn
+    -- Flash menu: these popups flash (full refresh) when they open and when they close
+    flash_description = false,     -- Book Description popup
+    flash_hold_menu = false,       -- OrbitShelf's hero hold menu (BookOrbit books)
+    flash_download_menu = false,   -- the Not On Device window (Download / Open In BookOrbit …)
+    flash_book_menu = false,       -- Bookshelf's own book menu (hold a book on the device)
+    flash_shelf_editor = false,    -- Bookshelf's shelf editor (hold a shelf tab)
+    return_shelf = false,          -- shelf (Bookshelf tab id) to show on open / book close; false = Bookshelf's own
+    add_to_collection = false,     -- Add To Collection row in the hold / Not On Device menus
     offline_library = false,       -- keep every book's details and cover on the device
     diagnostics = false,           -- write what OrbitShelf does to crash.log
+    search_bookorbit = false,      -- Bookshelf's search looks in BookOrbit instead of the device
     offline_update = "wifi",       -- Offline Library checks for new books: "wifi" | "refresh" | "both" | "manual"
 }
 
@@ -127,6 +137,90 @@ end
 
 -- ours runs; if it fails the error and traceback go to crash.log (once) and the
 -- original runs instead (or, with no original, the error carries on as before)
+-- ---- Work in flight ---------------------------------------------------------------------
+-- tbl[key] holds when a background job started. Sleep stops our workers without calling
+-- back, so a mark older than the job's limit counts as free again (before 1.2.17 a job cut
+-- off by sleep kept its shelf refresh, its download or the cover fetch blocked until a
+-- restart).
+function O.inFlight(tbl, key, max_s)
+    local t = tbl[key]
+    return type(t) == "number" and os.time() - t < (max_s or 120) + 15
+end
+
+-- ---- Popup flash ----------------------------------------------------------------------
+-- A flash over the popup's own box when it opens and again when it closes, to clear
+-- e-ink ghosting (Flash menu; every one off by default). 1.2.16 flashed the whole
+-- screen. The box is the popup's movable frame or the first child smaller than the
+-- screen (a dialog sits in a screen-sized container); failing that, the widget itself.
+local function popupRegion(w)
+    local Screen = require("device").screen
+    local sw, sh = Screen:getWidth(), Screen:getHeight()
+    local function small(d)
+        return type(d) == "table" and d.w and d.h and d.w > 0 and d.h > 0 and (d.w < sw or d.h < sh)
+    end
+    if type(w.movable) == "table" and small(w.movable.dimen) then return w.movable.dimen end
+    local node = w
+    for _depth = 1, 4 do
+        node = type(node) == "table" and node[1]
+        if type(node) ~= "table" then break end
+        if small(node.dimen) then return node.dimen end
+    end
+    return w.dimen
+end
+
+function O.flashPopup(w)
+    if type(w) ~= "table" or w._orbitshelf_flash then return w end
+    w._orbitshelf_flash = true
+    -- worked out when the refresh runs, after the popup has painted and has its size
+    UIManager:setDirty(w, function() return "flashui", popupRegion(w) end)
+    local orig = w.onCloseWidget
+    w.onCloseWidget = function(self, ...)
+        local d = popupRegion(self)
+        local region = type(d) == "table" and d.w and require("ui/geometry"):new{ x = d.x, y = d.y, w = d.w, h = d.h } or nil
+        local r = orig and orig(self, ...)
+        UIManager:setDirty(nil, function() return "flashui", region end)
+        return r
+    end
+    return w
+end
+
+-- Runs fn; with cfg[key] on, every popup it shows in the next moment (also one shown
+-- a tick later) flashes. Toasts and notes don't.
+local flash_window_until = 0
+local function wallMs()
+    local ok, time = pcall(require, "ui/time")
+    if ok and type(time) == "table" and time.now and time.to_ms then return time.to_ms(time.now()) end
+    return os.time() * 1000
+end
+local flash_show_hooked = false
+local flashed_in_window = 0
+function O.flashShownBy(key, fn, ...)
+    if not O.cfg[key] then
+        flash_window_until = 0
+        return fn(...)
+    end
+    if not flash_show_hooked then
+        flash_show_hooked = true
+        local orig_show = UIManager.show
+        UIManager.show = function(self, w, ...)
+            local r = orig_show(self, w, ...)
+            if wallMs() < flash_window_until and type(w) == "table" and not w.toast then
+                flashed_in_window = flashed_in_window + 1
+                pcall(O.flashPopup, w)
+            end
+            return r
+        end
+    end
+    -- open for as long as fn runs; if it showed nothing yet, a moment more for a popup
+    -- it shows a tick later
+    flash_window_until = math.huge
+    flashed_in_window = 0
+    local res = { pcall(fn, ...) }
+    flash_window_until = flashed_in_window == 0 and wallMs() + 300 or 0
+    if not res[1] then error(res[2], 0) end
+    return unpack(res, 2, table.maxn(res))
+end
+
 function O.guard(label, ours, orig)
     return function(...)
         local res = guardedCall(ours, ...)
@@ -145,6 +239,8 @@ local HOOK_LABELS = {
     _loadItems = "close-only menu", _activate = "close-only menu", open = "close-only menu",
     _startMenuPosition = "close control side", _buildPaginationFooter = "footer critter",
     _swapHeroInPlace = "hero flash", _pageTurnFlashDue = "shelf flash",
+    _searchAndDrill = "BookOrbit search", show = "Return To shelf",
+    _showBookDetail = "Flash: Bookshelf book menu", editTab = "Flash: shelf editor",
 }
 local remembered, armed = {}, {}
 

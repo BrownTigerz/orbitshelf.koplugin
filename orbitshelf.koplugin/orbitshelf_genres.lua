@@ -103,6 +103,17 @@ end
 
 -- a note in the corner (Network Tweaks style), never over the sleep screen
 function Genres.note(text)
+    -- one line on a small screen: long ones are cut with an ellipsis
+    text = tostring(text or "")
+    if #text > 46 then
+        local okU, util = pcall(require, "util")
+        local cut = okU and util.splitToChars and util.splitToChars(text) or nil
+        if cut and #cut > 44 then
+            text = table.concat(cut, "", 1, 44) .. "…"
+        elseif not cut then
+            text = text:sub(1, 44) .. "…"
+        end
+    end
     pcall(function()
         if require("device").screen_saver_mode then return end
         local NM = package.loaded["ui/network/manager"]
@@ -117,17 +128,26 @@ end
 -- ---- background worker -----------------------------------------------------------
 -- A forked process does the network calls and sends back a Lua table; it is checked
 -- every half second, so the screen and taps keep working. Sleep stops it.
+-- Numbers keep all their digits (%.17g; tostring kept 14). NaN and infinity have no
+-- Lua literal, so they're left out: before 1.2.18 one of them made the whole result
+-- unreadable and the batch was lost.
+local function number(v)
+    if v ~= v or v == math.huge or v == -math.huge then return nil end
+    return string.format("%.17g", v)
+end
+
 local function serialize(v)
     local t = type(v)
     if t == "string" then return string.format("%q", v) end
-    if t == "number" or t == "boolean" then return tostring(v) end
+    if t == "number" then return number(v) or "nil" end
+    if t == "boolean" then return tostring(v) end
     if t ~= "table" then return "nil" end
     local out = {}
     for k, x in pairs(v) do
-        if type(k) == "string" or type(k) == "number" then
-            local kt = type(k) == "string" and string.format("[%q]", k) or "[" .. tostring(k) .. "]"
-            out[#out + 1] = kt .. "=" .. serialize(x)
-        end
+        local kt
+        if type(k) == "string" then kt = string.format("[%q]", k)
+        elseif type(k) == "number" and number(k) then kt = "[" .. number(k) .. "]" end
+        if kt then out[#out + 1] = kt .. "=" .. serialize(x) end
     end
     return "{" .. table.concat(out, ",") .. "}"
 end
@@ -190,12 +210,14 @@ local function runWorker(client, child_fn, done, max_s)
             done(deserialize(data))
             return
         end
-        waited = waited + 0.5
+        -- every 0.5 s for the first 2 s (most jobs are done by then), then every second
+        local step_s = waited < 2 and 0.5 or 1
+        waited = waited + step_s
         if waited > (max_s or 120) then
             Genres.stop(true)
             return
         end
-        UIManager:scheduleIn(0.5, poll)
+        UIManager:scheduleIn(step_s, poll)
     end
     UIManager:scheduleIn(0.5, poll)
 end
@@ -212,7 +234,9 @@ function Genres.stop(paused, finished)
     if not finished then Genres.jobs = {} end
     -- batches still on their way back (or run inline) are ignored from here
     Genres.gen = (Genres.gen or 0) + 1
-    if Genres.running and Genres.full then pcall(Offline.tidy) end
+    -- after any run (1.2.18; only after Offline Library before): rewrites the offline
+    -- file only when it holds 50+ lines more than books
+    if Genres.running then pcall(Offline.tidy) end
     Genres.running = false
     Genres.paused = paused and true or false
 end
@@ -321,8 +345,8 @@ function Genres.build(silent, list_done)
     if not isWifiOn() then
         Genres.paused = true
         if not silent then
-            Genres.note(full and _("Offline Library paused: Wi-Fi is off. It'll finish when it's back.")
-                or _("Genres paused: Wi-Fi is off. They'll finish when it's back."))
+            Genres.note(full and _("Offline Library paused: Wi-Fi off")
+                or _("Genres paused: Wi-Fi off"))
         end
         return
     end
@@ -338,7 +362,9 @@ end
 local GENRES_BATCH = 10
 -- batches looked up at the same time (each its own worker), and how often the shelf
 -- and the progress note update while it runs
-local WORKERS = 3
+-- 2 since 1.2.20 (3 before): on a device log the server answered one lookup at a time,
+-- so a third worker added almost nothing but CPU and radio time
+local WORKERS = 2
 local REDRAW_S = 15
 function Genres.step(client, net, i, silent)
     local full = Genres.full
@@ -390,7 +416,7 @@ function Genres.step(client, net, i, silent)
             if gen ~= (Genres.gen or 0) then return end
             if not isWifiOn() then
                 Genres.stop(true)
-                if not silent then Genres.note(T(_("%1 paused at %2 of %3: Wi-Fi is off."), what, Genres.done, Genres.total)) end
+                if not silent then Genres.note(T(_("%1 paused: Wi-Fi off (%2/%3)"), what, Genres.done, Genres.total)) end
                 return
             end
             local batch = {}

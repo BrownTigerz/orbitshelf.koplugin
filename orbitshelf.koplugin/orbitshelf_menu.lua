@@ -277,6 +277,57 @@ local function menuItems()
         end, function() return cfg.use_bookorbit and bookOrbitInstalled() end)
     items[#items].separator = true
     items[#items + 1] = {
+        text_func = function()
+            local id = cfg.return_shelf
+            if not id then return _("Return To: Bookshelf's Choice") end
+            return T(_("Return To: %1"), O.shelfLabel(id) or id)
+        end,
+        help_text = _("Which shelf Bookshelf shows when it opens or when you close a book. Bookshelf's Choice keeps whatever shelf you were on (Bookshelf's own behaviour); pick a shelf to always come back to it."),
+        enabled_func = function() return getBookshelf() ~= nil end,
+        sub_item_table_func = function()
+            local out = {{
+                text = _("Bookshelf's Choice (last shelf)"),
+                radio = true,
+                checked_func = function() return not cfg.return_shelf end,
+                callback = function() cfg.return_shelf = false saveConfig() end,
+            }}
+            for _i, t in ipairs(O.shelfList()) do
+                out[#out + 1] = {
+                    text = t.label,
+                    radio = true,
+                    checked_func = function() return cfg.return_shelf == t.id end,
+                    callback = function()
+                        cfg.return_shelf = t.id
+                        saveConfig()
+                        pcall(O.hookReturnShelf)
+                    end,
+                }
+            end
+            return out
+        end,
+        separator = true,
+    }
+    items[#items + 1] = {
+        text = _("Add To Collection"),
+        sub_item_table = {
+            toggle("add_to_collection", _("Add To Collection In Book Menu"),
+                _("Hold the hero, or tap a book that isn't on the device: Add To Collection lists your BookOrbit collections (✓ = the book is in it). Tap one to add or remove the book, or make a new collection. It signs in like the web app, with your BookOrbit password. With BookOrbit Tweaks installed it uses that patch's sign-in; the saved password is shared either way."),
+                nil),
+            {
+                text = _("Forget Saved BookOrbit Password"),
+                help_text = _("The password Add To Collection saved on this device (encrypted). You'll be asked again next time."),
+                enabled_func = function() return O.Collections ~= nil and O.Collections.hasSaved() end,
+                callback = function() O.Collections.forget() end,
+            },
+            {
+                text = _("About The Saved Password"),
+                keep_menu_open = true,
+                callback = function() O.Collections.about() end,
+            },
+        },
+    }
+    items[#items + 1] = offlineMenu()
+    items[#items + 1] = {
         text = _("Hero"),
         sub_item_table = {
             toggle("hero_pills", _("Download / Remove Buttons"),
@@ -310,9 +361,6 @@ local function menuItems()
                     return out
                 end)(),
             },
-            toggle("flash_hero", _("Flash When It Changes"),
-                _("Flashes the hero clean when it shows another book, so the last cover doesn't show faintly behind the new one. Takes a moment longer. Off by default."),
-                nil),
         },
     }
     items[#items + 1] = {
@@ -355,12 +403,63 @@ local function menuItems()
                 end,
                 separator = true,
             },
-            toggle("flash_shelf", _("Flash On Every Page Turn"),
-                _("Every page turn of the shelf is a full refresh, to clear ghosting. Page turns skip their animation and take a little longer. Bookshelf's own \"Use E-ink refresh rate for shelf pages\" flashes only as often as KOReader's Full refresh rate. Off by default."),
+            toggle("search_bookorbit", _("Search BookOrbit"),
+                _("Bookshelf's search looks in your BookOrbit library instead of the books on the device. Results open like a folder; back returns to where you were. With Wi-Fi off it searches the saved library list (title, author, series, genres). Off by default."),
                 nil),
         },
     }
-    items[#items + 1] = offlineMenu()
+    items[#items + 1] = {
+        text = _("Flash"),
+        help_text = _("Full refreshes to clear e-ink ghosting, each one on its own. All off by default; turn on only the ones you need."),
+        sub_item_table = {
+            toggle("flash_hero", _("Hero When It Changes"),
+                _("Flashes the hero clean when it shows another book, so the last cover doesn't show faintly behind the new one. Takes a moment longer. Off by default."),
+                nil),
+            {
+                text_func = function()
+                    local n = tonumber(cfg.flash_hero_every) or 1
+                    return n <= 1 and _("Hero: Every Change") or T(_("Hero: Every %1th Change"), n)
+                end,
+                help_text = _("How often the hero flashes when Hero When It Changes is on. Every Change cleans every time but each tap waits for the flash; every 4th or 6th keeps most taps quick and still clears the ghosting regularly."),
+                enabled_func = function() return cfg.flash_hero end,
+                sub_item_table = (function()
+                    local out = {}
+                    for _i, n in ipairs({ 1, 4, 6 }) do
+                        out[#out + 1] = {
+                            text = n == 1 and _("Every Change") or T(_("Every %1th Change"), n),
+                            radio = true,
+                            checked_func = function() return (tonumber(cfg.flash_hero_every) or 1) == n end,
+                            keep_menu_open = true,
+                            callback = function()
+                                cfg.flash_hero_every = n
+                                saveConfig()
+                            end,
+                        }
+                    end
+                    return out
+                end)(),
+            },
+            (function()
+                local t = toggle("flash_shelf", _("Shelf Page Turns"),
+                    _("Every page turn of the shelf is a full refresh, to clear ghosting. Page turns skip their animation and take a little longer. Bookshelf's own \"Use E-ink refresh rate for shelf pages\" flashes only as often as KOReader's Full refresh rate. Off by default."),
+                    nil)
+                t.separator = true
+                return t
+            end)(),
+            toggle("flash_description", _("Book Description"),
+                _("The Book Description popup flashes when it opens and when it closes, to clear ghosting. Off by default."), nil),
+            toggle("flash_hold_menu", _("Hold Menu (BookOrbit Books)"),
+                _("OrbitShelf's menu when you hold the hero of a BookOrbit book flashes when it opens and when it closes. Off by default."), nil),
+            toggle("flash_download_menu", _("Download Window"),
+                _("The window for a book that isn't on the device (Download, Open In BookOrbit, Book Description …) flashes when it opens and when it closes. Off by default."), nil),
+            toggle("flash_book_menu", _("Bookshelf's Book Menu"),
+                _("Bookshelf's own menu when you hold a book that's on the device flashes when it opens and when it closes. Off by default."),
+                function() O.hookPopupFlash() end),
+            toggle("flash_shelf_editor", _("Shelf Editor"),
+                _("Bookshelf's shelf editor (hold a shelf tab) flashes when it opens and when it closes. Off by default."),
+                function() O.hookPopupFlash() end),
+        },
+    }
     items[#items + 1] = {
         text = _("Footer"),
         sub_item_table = {

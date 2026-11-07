@@ -135,7 +135,7 @@ end
 local BoCovers = {}
 do
     local index, index_at
-    local wanted, tried, busy = {}, {}, false
+    local wanted, tried, job = {}, {}, {}
 
     local function dir()
         return require("datastorage"):getDataDir() .. "/cache/bookorbit"
@@ -188,7 +188,8 @@ do
     end
 
     function BoCovers.fetch(on_done)
-        if busy or next(wanted) == nil or not isWifiOn() then return end
+        if O.inFlight(job, "covers", 90) or next(wanted) == nil or not isWifiOn() then return end
+        if type(O.runWorker) ~= "function" then return end
         local client = boApiClient()
         if not client then wanted = {} return end
         local jobs, d = {}, dir()
@@ -200,28 +201,25 @@ do
         end
         for _i, j in ipairs(jobs) do wanted[j.id] = nil end
         if #jobs == 0 then return end
-        busy = true
+        job.covers = os.time()
         require("util").makePath(d)
-        require("ui/trapper"):wrap(function()
-            local got = 0
-            local ok_run, completed, result = pcall(client.runInSubprocess, client, function()
-                local n = 0
-                for _i, j in ipairs(jobs) do
-                    local ok = client:downloadCatalogThumbnail(j.id, j.path, {
-                        temp_path = j.path .. ".part",
-                        max_bytes = 4 * 1024 * 1024,
-                        background = false,
-                    })
-                    if ok then n = n + 1 end
-                end
-                return n
-            end)
-            busy = false
-            if ok_run and completed and type(result) == "table" then
-                got = tonumber(result.body) or 0
-            elseif ok_run and type(result) == "number" then
-                got = result
+        -- in OrbitShelf's worker: BookOrbit's runInSubprocess (used before 1.2.17) only
+        -- forks with its background_requests flag on, which our client doesn't set, so
+        -- each batch of 8 covers downloaded on the screen's thread and froze it
+        O.runWorker(client, function()
+            local n = 0
+            for _i, j in ipairs(jobs) do
+                local ok = client:downloadCatalogThumbnail(j.id, j.path, {
+                    temp_path = j.path .. ".part",
+                    max_bytes = 4 * 1024 * 1024,
+                    background = false,
+                })
+                if ok then n = n + 1 end
             end
+            return { n = n }
+        end, function(res)
+            job.covers = nil
+            local got = type(res) == "table" and tonumber(res.n) or 0
             if next(wanted) ~= nil then
                 UIManager:nextTick(function() BoCovers.fetch(on_done) end)
             end
@@ -231,7 +229,7 @@ do
                 if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
                 if on_done then pcall(on_done, got) end
             end
-        end)
+        end, 90)
     end
 
     -- Reading Log style: newest cover per book, max 600, drop old + .part leftovers
@@ -271,11 +269,11 @@ do
                     end
                 end
             end
-            for _, e in ipairs(all) do
+            for _i, e in ipairs(all) do
                 if e.old then gone(e.path) end
             end
             local keep = {}
-            for _, e in pairs(newest) do
+            for _k, e in pairs(newest) do
                 if not e.old then keep[#keep + 1] = e end
             end
             table.sort(keep, function(a, b) return a.at > b.at end)
@@ -302,10 +300,6 @@ do
         pcall(function()
             local SP = package.loaded.simpleui_sidepanel
             if type(SP) == "table" and type(SP.boCoverForget) == "function" then SP.boCoverForget() end
-        end)
-        pcall(function()
-            local side = package.loaded["simpleui_sidepanel_bo"]
-            -- nothing required
         end)
         return res
     end
@@ -480,16 +474,39 @@ function Offline.size()
 end
 function Offline.sizeChanged() offline_size = nil end
 
--- In-memory + settings-backed page cache: key -> { t=, items=, total= }
+-- Saved lists (page cache): key -> { t=, items=, total= }
+-- In their own file, koreader/orbitshelf-lists.lua (1.2.17). Before, they sat in
+-- KOReader's settings, so every settings save, by any plugin, rewrote all of them.
+-- Written when KOReader saves its settings (sleep, closing a book, exit) and only when
+-- something changed; moved over from the settings once.
 local page_cache = {}
-local CACHE_KEY = "orbitshelf_tweaks_pages_2"
+local CACHE_KEY = "orbitshelf_tweaks_pages_2" -- 1.5.2 - 1.2.16: in KOReader's settings
 local OLD_CACHE_KEY = "orbitshelf_tweaks_pages" -- 1.5.1 and older: authors saved as one string
+local lists_store, lists_dirty
+
+local function listsStore()
+    if lists_store == nil then
+        lists_store = false
+        local ok, LuaSettings = pcall(require, "luasettings")
+        if ok and type(LuaSettings) == "table" then
+            local okO, st = pcall(LuaSettings.open, LuaSettings,
+                require("datastorage"):getDataDir() .. "/orbitshelf-lists.lua")
+            if okO and st then lists_store = st end
+        end
+    end
+    return lists_store or nil
+end
 
 local function loadPageCache()
     if G_reader_settings and G_reader_settings:readSetting(OLD_CACHE_KEY) ~= nil then
         G_reader_settings:delSetting(OLD_CACHE_KEY)
     end
-    local saved = G_reader_settings and G_reader_settings:readSetting(CACHE_KEY)
+    local st = listsStore()
+    local saved = st and st:readSetting("pages")
+    if saved == nil and G_reader_settings then
+        saved = G_reader_settings:readSetting(CACHE_KEY)
+        if saved ~= nil then lists_dirty = true end -- moves to the file at the next save
+    end
     if type(saved) == "table" then
         for k, v in pairs(saved) do page_cache[k] = v end
         -- an empty list saved from a failed fetch must not hide the shelf
@@ -515,7 +532,21 @@ local function savePageCache()
         end
     end
     for k in pairs(page_cache) do if slim[k] == nil then page_cache[k] = nil end end
-    G_reader_settings:saveSetting(CACHE_KEY, page_cache)
+    lists_dirty = true
+    if not listsStore() then G_reader_settings:saveSetting(CACHE_KEY, page_cache) end
+end
+
+-- KOReader is saving its settings: write the lists too, if they changed
+local function flushPageCache()
+    if not lists_dirty then return end
+    local st = listsStore()
+    if not st then return end
+    st:saveSetting("pages", page_cache)
+    st:flush()
+    lists_dirty = false
+    if G_reader_settings and G_reader_settings:readSetting(CACHE_KEY) ~= nil then
+        G_reader_settings:delSetting(CACHE_KEY)
+    end
 end
 
 -- forget every saved list (the table itself stays: other files hold it)
@@ -600,6 +631,60 @@ local function refreshCoverPaths(items)
     return items
 end
 
+-- A saved list that's over cache_ttl old (30 min) is shown as it is, and a fresh copy
+-- is fetched in the background worker; the shelf is redrawn only if the list changed.
+-- (Before 1.2.10 the shelf waited on the network, about 1 s, before showing.)
+local refreshing = {}
+
+local function listSignature(items)
+    local parts = {}
+    for _i, r in ipairs(items or {}) do
+        parts[#parts + 1] = tostring(r.bookorbit_id) .. ":" .. tostring(r.bookorbit_cv)
+    end
+    return table.concat(parts, ",")
+end
+
+local function refreshInBackground(key, api_params, client)
+    if O.inFlight(refreshing, key, 120) or type(O.runWorker) ~= "function" then return false end
+    refreshing[key] = os.time()
+    O.runWorker(client, function()
+        local books, seen, page, total = {}, {}, 1, nil
+        for _guard = 1, 20 do
+            local q = {}
+            for k, v in pairs(api_params or {}) do q[k] = v end
+            q.page, q.size = page, 100
+            local body = client:catalogBooks(q)
+            if type(body) ~= "table" then return nil end
+            local items = body.items or body.books or body.entries or {}
+            if type(items) ~= "table" or #items == 0 then break end
+            for _i, book in ipairs(items) do
+                if type(book) == "table" and book.id and not seen[book.id] then
+                    seen[book.id] = true
+                    books[#books + 1] = recordFromBo(book)
+                end
+            end
+            total = tonumber(body.total) or tonumber(body.totalCount) or total
+            if (total and page * 100 >= total) or #items < 100 then break end
+            page = page + 1
+        end
+        return { items = books, total = total or #books }
+    end, function(res)
+        refreshing[key] = nil
+        if type(res) ~= "table" or type(res.items) ~= "table" then return end
+        local old = page_cache[key]
+        if type(old) == "table" and listSignature(old.items) == listSignature(res.items) then
+            old.t = os.time() -- same list: only its age changes, nothing to redraw
+            lists_dirty = true
+            return
+        end
+        page_cache[key] = { t = os.time(), items = res.items, total = res.total }
+        savePageCache()
+        local bs = getBookshelf()
+        if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
+    end, 120)
+    return true
+end
+
 local function fetchBoPage(api_params, force)
     local client, err = boApiClient()
     if not client then return {}, nil, err end
@@ -626,6 +711,14 @@ local function fetchBoPage(api_params, force)
 
     if not wifi and type(entry) == "table" and type(entry.items) == "table" then
         return refreshCoverPaths(entry.items), entry.total
+    end
+
+    -- old but usable: show it now, refresh it in the background
+    local usable = not force and type(entry) == "table" and type(entry.items) == "table" and #entry.items > 0
+    if usable and wifi and (O.inFlight(refreshing, key, 120) or refreshInBackground(key, api_params, client)) then
+        local items = refreshCoverPaths(entry.items)
+        BoCovers.fetch()
+        return items, entry.total
     end
 
     local books, seen, page, page_size = {}, {}, 1, 100
@@ -734,6 +827,9 @@ local function retargetHeroPreview(id, local_path)
     end)
 end
 
+-- books being downloaded right now (a second tap doesn't start another)
+local downloading = {}
+
 local function downloadBookOrbitBook(book, on_done)
     local id = tonumber(book and (book.bookorbit_id or book.id))
     if not id then
@@ -764,33 +860,31 @@ local function downloadBookOrbitBook(book, on_done)
 
     -- Same way the Side Panel and BookOrbit's own book page download: BookOrbit's
     -- download folder and layout, checked against the server's hash, then linked.
+    -- The detail call, the download and the hash check run in OrbitShelf's background
+    -- worker, so the shelf keeps drawing and taking taps; a corner note says what's
+    -- happening. (Before 1.2.6 it showed BookOrbit's own loading pill, made for
+    -- BookOrbit's pages, over Bookshelf's footer, and the download ran on the screen's
+    -- thread, so the pill and the shelf glitched while it ran.)
     local function run()
-        local Trapper = require("ui/trapper")
-        Trapper:wrap(function()
-            local okT, Toast = pcall(require, "bookorbit_toast")
-            local pill = okT and Toast.loading and Toast.loading(T(_("Downloading %1…"), tostring(book.title or _("book")))) or nil
-            local function done() if pill and pill.close then pcall(pill.close, pill) end end
+        if O.inFlight(downloading, id, 600) then return end
+        local okR, Root = pcall(require, "bookorbit_download_root")
+        local root = okR and type(Root) == "table" and Root.get and Root.get()
+            or (G_reader_settings and G_reader_settings:readSetting("home_dir"))
+        if type(root) ~= "string" or root == "" then
+            return fail(_("Set a download folder in BookOrbit first."))
+        end
+        if type(O.runWorker) ~= "function" then return end
+        downloading[id] = os.time()
+        local short = tostring(book.title or _("book"))
+        if #short > 28 then short = short:sub(1, 26):gsub("[\128-\191]+$", ""):gsub("[\192-\255]$", "") .. "…" end
+        O.Genres.note(T(_("Downloading %1"), short))
 
-            local ok_run, completed, result = pcall(client.runInSubprocess, client, function() return client:catalogBook(id) end)
-            local detail = ok_run and completed and type(result) == "table" and result.body or nil
-            if type(detail) ~= "table" then
-                local ok_d, d = pcall(function() return client:catalogBook(id) end)
-                detail = ok_d and type(d) == "table" and d or nil
-            end
-            if type(detail) ~= "table" then
-                done()
-                return fail(_("Could not load book details"))
-            end
+        O.runWorker(client, function()
+            -- in the worker: everything that waits on the network or the disk
+            local detail = client:catalogBook(id)
+            if type(detail) ~= "table" then return { err = "details" } end
             local file = pickFile(detail)
-            if not file then done() return fail(_("No file this reader can open")) end
-
-            local okR, Root = pcall(require, "bookorbit_download_root")
-            local root = okR and type(Root) == "table" and Root.get and Root.get()
-                or (G_reader_settings and G_reader_settings:readSetting("home_dir"))
-            if type(root) ~= "string" or root == "" then
-                done()
-                return fail(_("Set a download folder in BookOrbit first."))
-            end
+            if not file then return { err = "nofile" } end
             local util = require("util")
             -- the server's folder layout under the download folder
             local rel
@@ -811,10 +905,9 @@ local function downloadBookOrbitBook(book, on_done)
             local dest = (root ~= "/" and root or "") .. "/" .. rel
             local parent = dest:match("^(.*)/[^/]+$")
             if parent then util.makePath(parent) end
-
             if lfs.attributes(dest, "mode") ~= "file" then
                 local okX, Transfer = pcall(require, "bookorbit_download_transfer")
-                if not okX then done() return fail(_("This BookOrbit version can't download from here.")) end
+                if not okX then return { err = "old" } end
                 pcall(Transfer.sweepStale, root)
                 local ok_t, ok, err = pcall(Transfer.run, {
                     root = root, destination = dest, generation = os.time(),
@@ -825,20 +918,25 @@ local function downloadBookOrbitBook(book, on_done)
                         return client:downloadCatalogFile(file.id, dest, o)
                     end,
                 })
-                if not (ok_t and ok) then
-                    done()
-                    logger.warn(TAG, "download failed:", ok_t and err or ok)
-                    if err ~= "cancelled" then
-                        fail(T(_("Couldn't download it:\n%1"), tostring(ok_t and err or ok)))
-                    end
-                    return
-                end
+                if not (ok_t and ok) then return { err = tostring(ok_t and err or ok) } end
             end
-
+            return { dest = dest, file_id = file.id, title = detail.title }
+        end, function(res)
+            downloading[id] = nil
+            if type(res) ~= "table" then
+                return fail(_("Couldn't download it. Check Wi-Fi and try again."))
+            end
+            if res.err then
+                logger.warn(TAG, "download failed:", res.err)
+                if res.err == "details" then return fail(_("Could not load book details")) end
+                if res.err == "nofile" then return fail(_("No file this reader can open")) end
+                if res.err == "old" then return fail(_("This BookOrbit version can't download from here.")) end
+                if res.err ~= "cancelled" then fail(T(_("Couldn't download it:\n%1"), res.err)) end
+                return
+            end
+            local dest = res.dest
             -- on the device straight away, before BookOrbit links it
             rememberLocalDownload(id, dest)
-
-            done()
             if on_done then pcall(on_done, dest) end
             -- the shelf shows it as on the device now, whoever started the download;
             -- before the link below, which is a network call
@@ -846,35 +944,39 @@ local function downloadBookOrbitBook(book, on_done)
             local bs = getBookshelf()
             if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
 
-            -- linked to its BookOrbit book, so it syncs: a moment later, after the shelf
-            -- has redrawn
+            -- linked to its BookOrbit book, so it syncs: in the worker too
             UIManager:scheduleIn(0.5, function()
-                pcall(function()
+                O.runWorker(client, function()
+                    local util = require("util")
                     local digest = util.partialMD5(dest)
-                    if not digest then return end
-                    local body = client:matchCheck({ digest }, { [digest] = { source = "file", book_file_id = file.id } })
-                    local SM = require("bookorbit_state_manager")
-                    if type(body) ~= "table" then return end
-                    if SM.applyLibraryVersion then SM.applyLibraryVersion(body.libraryVersion) end
-                    for _i, m in ipairs(body.matches or {}) do
-                        if m.hash == digest then
-                            SM.linkFile(digest, m.bookFileId, m.bookId, dest)
-                            return
+                    if not digest then return nil end
+                    local body = client:matchCheck({ digest }, { [digest] = { source = "file", book_file_id = res.file_id } })
+                    return type(body) == "table" and { digest = digest, body = body } or nil
+                end, function(m)
+                    pcall(function()
+                        if type(m) ~= "table" then return end
+                        local SM = require("bookorbit_state_manager")
+                        if SM.applyLibraryVersion then SM.applyLibraryVersion(m.body.libraryVersion) end
+                        for _i, x in ipairs(m.body.matches or {}) do
+                            if x.hash == m.digest then
+                                SM.linkFile(m.digest, x.bookFileId, x.bookId, dest)
+                                return
+                            end
                         end
-                    end
-                end)
+                    end)
+                end, 60)
             end)
 
             -- it is not opened by itself: the reader chooses
             UIManager:show(require("ui/widget/confirmbox"):new{
-                text = T(_("Downloaded %1.\n\nOpen it now?"), tostring(detail.title or book.title or "")),
+                text = T(_("Downloaded %1.\n\nOpen it now?"), tostring(res.title or book.title or "")),
                 ok_text = _("Open"),
                 cancel_text = _("Later"),
                 ok_callback = function()
                     require("apps/reader/readerui"):showReader(dest)
                 end,
             })
-        end)
+        end, 600)
     end
 
     local okN, NetworkMgr = pcall(require, "ui/network/manager")
@@ -1134,6 +1236,7 @@ local function popupDescription(book, text)
     end
     function popup:onClose() close() return true end
     UIManager:show(popup)
+    if O.cfg.flash_description then O.flashPopup(popup) end
     UIManager:setDirty(popup, function() return "ui", frame.dimen end)
 end
 
@@ -1152,7 +1255,7 @@ local function showDescription(book)
         return
     end
     if not isWifiOn() then
-        O.Genres.note(_("No description saved. Turn on Wi-Fi, or Offline Library, to see it."))
+        O.Genres.note(_("No description saved: Wi-Fi is off"))
         return
     end
     local client = boApiClient()
@@ -1163,12 +1266,49 @@ local function showDescription(book)
     end, function(res)
         local text = type(res) == "table" and type(res.d) == "string" and res.d or nil
         if not text or text == "" then
-            O.Genres.note(_("This book has no description in BookOrbit."))
+            O.Genres.note(_("No description in BookOrbit"))
             return
         end
         desc_memo[tostring(id)] = text
         popupDescription(book, plainText(text))
     end, 30)
+end
+
+-- ---- Add To Collection (with BookOrbit Tweaks) ------------------------------------
+-- BookOrbit's KOReader sign-in can't change collections; the website sign-in can.
+-- With BookOrbit Tweaks (2.15.8 on) its picker opens; without it, OrbitShelf's own
+-- copy (orbitshelf_collections.lua, same messages and the same saved login).
+-- Only with the Add To Collection setting on (off by default).
+
+local function collectionsApi()
+    if not O.cfg.add_to_collection then return nil end
+    local C = package.loaded["bookorbit_tweaks_collections"]
+    if type(C) == "table" and type(C.show) == "function" then return C end
+    C = O.Collections
+    return type(C) == "table" and type(C.show) == "function" and C or nil
+end
+
+local function collectionBookId(book)
+    if type(book) ~= "table" or book.is_folder then return nil end
+    return tonumber(book.bookorbit_id) or tonumber(bookIdForPath(book.filepath))
+end
+
+local function canAddToCollection(book)
+    return collectionsApi() ~= nil and collectionBookId(book) ~= nil and bookOrbitSignedIn()
+end
+
+local function addToCollection(book)
+    local C, id, client = collectionsApi(), collectionBookId(book), O.boApiClient()
+    if not (C and id) then return end
+    if not client then
+        UIManager:show(require("ui/widget/infomessage"):new{ text = _("Couldn't open your BookOrbit collections.") })
+        return
+    end
+    local ok, err = pcall(C.show, client, id, book.display_title or book.title)
+    if not ok then
+        O.problem("collections", "Add To Collection failed:", err)
+        UIManager:show(require("ui/widget/infomessage"):new{ text = _("Couldn't open your BookOrbit collections.") })
+    end
 end
 
 -- A tap or a long-press on a book that is not on the device: say so and offer
@@ -1185,30 +1325,37 @@ local function showNotOnDevice(book)
     end
     lines[#lines + 1] = _("Not On Device")
     local dialog
-    dialog = ButtonDialog:new{
-        title = table.concat(lines, "\n"),
-        buttons = {
-            {{ text = _("Download"), callback = function()
-                UIManager:close(dialog)
-                downloadBookOrbitBook(book)
-            end }},
-            {{ text = _("Open In BookOrbit"), callback = function()
-                UIManager:close(dialog)
-                openInBookOrbit(book)
-            end }},
-            {{ text = _("Book Description"), callback = function()
-                UIManager:close(dialog)
-                showDescription(book)
-            end }},
-            {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
-        },
+    local buttons = {
+        {{ text = _("Download"), callback = function()
+            UIManager:close(dialog)
+            downloadBookOrbitBook(book)
+        end }},
+        {{ text = _("Open In BookOrbit"), callback = function()
+            UIManager:close(dialog)
+            openInBookOrbit(book)
+        end }},
+        {{ text = _("Book Description"), callback = function()
+            UIManager:close(dialog)
+            showDescription(book)
+        end }},
     }
+    if canAddToCollection(book) then
+        buttons[#buttons + 1] = {{ text = _("Add To Collection"), callback = function()
+            UIManager:close(dialog)
+            addToCollection(book)
+        end }}
+    end
+    buttons[#buttons + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }}
+    dialog = ButtonDialog:new{ title = table.concat(lines, "\n"), buttons = buttons }
     UIManager:show(dialog)
+    if O.cfg.flash_download_menu then O.flashPopup(dialog) end
 end
 
 
 -- shared with the other files
 O.BoCovers = BoCovers
+O.addToCollection = addToCollection
+O.canAddToCollection = canAddToCollection
 O.Offline = Offline
 O.boApiClient = boApiClient
 O.bookIdForPath = bookIdForPath
@@ -1224,6 +1371,7 @@ O.isWifiOn = isWifiOn
 O.liveBookPath = liveBookPath
 O.openInBookOrbit = openInBookOrbit
 O.page_cache = page_cache
+O.flushPageCache = flushPageCache
 O.recordFromBo = recordFromBo
 O.registerFileDialogButton = registerFileDialogButton
 O.removeFromDevice = removeFromDevice

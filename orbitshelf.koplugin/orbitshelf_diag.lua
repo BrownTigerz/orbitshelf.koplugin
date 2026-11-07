@@ -29,10 +29,9 @@ local DIAG_VERSION = O.VERSION
 -- lines go to crash.log through KOReader's logger, with this tag
 local DIAG_TAG = "orbitshelf " .. tostring(O.VERSION) .. " diag:"
 
+local hero_logged = 0
 local SLOW_MS = 50          -- list/fetch/cover path always logged at or above
 local SLOW_COVER_MS = 80
-local SLOW_OPEN_MS = 100
-local SLOW_REG_MS = 30
 
 -- the old diagnostics patch is running: it logs, this stays off
 if package.loaded["orbitshelf_diagnostics_patch"] then
@@ -210,8 +209,8 @@ summary = function(why)
     write(string.format("Lua memory: %.0f KB (was %.0f KB at start)", mem_kb(), stats.mem_start))
 
     local hints = {}
-    if stats.register.n == 0 then
-        hints[#hints + 1] = "registerSource never ran: Bookshelf may load late, or Use BookOrbit is off / not signed in"
+    if stats.register.n == 0 and not O.spec then
+        hints[#hints + 1] = "BookOrbit source never registered: Bookshelf may load late, or Use BookOrbit is off / not signed in"
     end
     if stats.source_refused > 0 then
         hints[#hints + 1] = "registerSource was refused (see earlier lines for the reason)"
@@ -240,81 +239,18 @@ summary = function(why)
     end
 end
 
--- ---- wrap helper ----------------------------------------------------------------
-
-local function wrap(tbl, key, label, after_fn)
-    if type(tbl) ~= "table" then return false end
-    local f = tbl[key]
-    if type(f) ~= "function" then
-        log("hook %s: not found", label)
-        return false
-    end
-    local mark = "_orbitshelf_diag_" .. key
-    if tbl[mark] then return true end
-    tbl[mark] = true
-    tbl[key] = function(...)
-        if not on() then return f(...) end
-        local t0 = now_ms()
-        local res = { pcall(f, ...) }
-        local took = now_ms() - t0
-        if not res[1] then
-            stats.errors = stats.errors + 1
-            log("ERROR %s failed after %d ms: %s", label, took, tostring(res[2]))
-            error(res[2], 0)
-        end
-        if after_fn then
-            pcall(after_fn, took, res, ...)
-        elseif took >= SLOW_MS then
-            log("%s done in %d ms", label, took)
-        end
-        return unpack(res, 2)
-    end
-    log("hook %s: applied", label)
-    return true
-end
-
 -- ---- environment snapshot -------------------------------------------------------
 
-local function bookOrbitInstalled()
-    if lfs.attributes("plugins/bookorbit.koplugin/main.lua", "mode") == "file" then return true end
-    if lfs.attributes("plugins/BookOrbit.koplugin/main.lua", "mode") == "file" then return true end
-    local ok = pcall(require, "bookorbit_api")
-    return ok
-end
-
-local function bookOrbitSignedIn()
-    local s = G_reader_settings and G_reader_settings:readSetting("bookorbit")
-    return type(s) == "table" and s.server_url and s.username and s.userkey and true or false
-end
-
-local function orbitshelfCfg()
-    local c = G_reader_settings and G_reader_settings:readSetting("orbitshelf_tweaks")
-    return type(c) == "table" and c or {}
-end
-
-local function getBookshelf()
-    local FM = package.loaded["apps/filemanager/filemanager"]
-    local fm = type(FM) == "table" and FM.instance
-    if type(fm) == "table" and type(fm.bookshelf) == "table" then return fm.bookshelf end
-    local ReaderUI = package.loaded["apps/reader/readerui"]
-    if type(ReaderUI) == "table" and type(ReaderUI.instance) == "table"
-            and type(ReaderUI.instance.bookshelf) == "table" then
-        return ReaderUI.instance.bookshelf
-    end
-    return nil
-end
-
 local function snapshot(why)
-    local c = orbitshelfCfg()
-    local bs = getBookshelf()
-    local patch_loaded = package.loaded["orbitshelf_tweaks_patch"] and true or false
+    local bs = O.getBookshelf()
     log("---- snapshot (%s) ----", why)
-    log("OrbitShelf loaded: %s | diagnostic %s", q(patch_loaded), DIAG_VERSION)
+    log("OrbitShelf plugin %s", DIAG_VERSION)
+    log("BookOrbit source: %s", O.spec and ("registered via " .. tostring(O.source_via)) or "not registered")
     log("Bookshelf present: %s | SOURCE_API: %s",
         q(bs ~= nil),
         q(bs and bs.SOURCE_API))
     log("BookOrbit installed: %s | signed in: %s",
-        q(bookOrbitInstalled()), q(bookOrbitSignedIn()))
+        q(O.bookOrbitInstalled()), q(O.bookOrbitSignedIn()))
     -- every OrbitShelf setting (none of them is private), sorted
     do
         local keys = {}
@@ -335,13 +271,12 @@ local function snapshot(why)
     pcall(function()
         local TM = package.loaded.tweaks_mods
         local entry = type(TM) == "table" and type(TM.entries) == "table" and TM.entries.orbitshelf_tweaks
-        local okm, FMmenu = pcall(require, "apps/filemanager/filemanagermenu")
         local lists = 0
-        local saved = G_reader_settings and G_reader_settings:readSetting("orbitshelf_tweaks_pages")
-        if type(saved) == "table" then for _k in pairs(saved) do lists = lists + 1 end end
-        log("settings menu: Add-ons entry=%s (Add-ons patch active=%s) | Tools hook=%s | cached BookOrbit lists=%d",
+        -- the saved lists (koreader/orbitshelf-lists.lua since 1.2.17)
+        for _k in pairs(O.page_cache or {}) do lists = lists + 1 end
+        log("settings menu: Add-ons entry=%s (Add-ons patch active=%s) | Tools menu=%s | saved BookOrbit lists=%d",
             q(entry and true or false), q(type(TM) == "table" and TM.active and true or false),
-            q(okm and type(FMmenu) == "table" and FMmenu._orbitshelf_menu and true or false), lists)
+            q(not (type(TM) == "table" and TM.active) and true or false), lists)
     end)
     -- cover cache size
     pcall(function()
@@ -416,11 +351,11 @@ local function wrapSpec(spec)
     end
     if type(spec.open) == "function" and not spec._orbitshelf_diag_open then
         spec._orbitshelf_diag_open = true
-        local O = spec.open
+        local orig = spec.open
         spec.open = function(book, ctx, ...)
-            if not on() then return O(book, ctx, ...) end
+            if not on() then return orig(book, ctx, ...) end
             local t1 = now_ms()
-            local r = { pcall(O, book, ctx, ...) }
+            local r = { pcall(orig, book, ctx, ...) }
             local ms = now_ms() - t1
             add(stats.open, ms)
             if not r[1] then
@@ -652,6 +587,7 @@ local function hookHero()
         local B = HeroCard._buildRightColumn
         HeroCard._buildRightColumn = function(self, book, ...)
             if not on() then return B(self, book, ...) end
+            O.hero_bookshelf_ms = 0
             local t0 = now_ms()
             local r = { pcall(B, self, book, ...) }
             local ms = now_ms() - t0
@@ -662,17 +598,39 @@ local function hookHero()
             end
             local is_bo = type(book) == "table" and (book.is_bookorbit or book.bookorbit_id
                 or book.source_kind == "bookorbit")
-            if is_bo then
-                stats.hero_pills = stats.hero_pills + 1
-                if ms >= SLOW_MS then
-                    log("hero column for BookOrbit book %q in %d ms", q(book.title), ms)
-                end
-            elseif ms >= 80 then
-                log("hero column slow %d ms title=%s", ms, q(type(book) == "table" and book.title))
+            if is_bo then stats.hero_pills = stats.hero_pills + 1 end
+            -- the first 15, then slow ones: split into Bookshelf's own build and OrbitShelf's
+            hero_logged = hero_logged + 1
+            if hero_logged <= 15 or ms >= 80 then
+                local bs = math.floor(O.hero_bookshelf_ms or 0)
+                log("hero column %d ms (Bookshelf %d, OrbitShelf %d) bookorbit=%s title=%s",
+                    ms, bs, math.max(0, ms - bs), q(is_bo and true or false),
+                    q(type(book) == "table" and book.title))
             end
             return unpack(r, 2)
         end
         log("hook HeroCard._buildRightColumn: applied")
+    end
+
+    -- a tap on a book: the whole hero swap (Bookshelf + OrbitShelf + any flash)
+    local okW, BW = pcall(require, "lib/bookshelf_widget")
+    if okW and type(BW) == "table" and type(BW._swapHeroInPlace) == "function" and not BW._orbitshelf_diag_swap then
+        BW._orbitshelf_diag_swap = true
+        local S = BW._swapHeroInPlace
+        local swaps = 0
+        BW._swapHeroInPlace = function(self, ...)
+            if not on() then return S(self, ...) end
+            local t0 = now_ms()
+            local r = { pcall(S, self, ...) }
+            local ms = now_ms() - t0
+            if not r[1] then error(r[2], 0) end
+            swaps = swaps + 1
+            if swaps <= 15 or ms >= 150 then
+                log("tap on a book: hero swap %d ms (flash_hero=%s)", ms, q(O.cfg.flash_hero))
+            end
+            return unpack(r, 2)
+        end
+        log("hook BookshelfWidget._swapHeroInPlace: applied (tap timing)")
     end
     return true
 end
@@ -689,12 +647,12 @@ local function hookStartMenu()
     StartMenu._orbitshelf_diag_open = true
 
     if type(StartMenu.open) == "function" then
-        local O = StartMenu.open
+        local orig = StartMenu.open
         StartMenu.open = function(bw, bottom_inset, burger_dimen, context, burger_art, anchor_top, side_override, ...)
             if not on() then
-                return O(bw, bottom_inset, burger_dimen, context, burger_art, anchor_top, side_override, ...)
+                return orig(bw, bottom_inset, burger_dimen, context, burger_art, anchor_top, side_override, ...)
             end
-            local c = orbitshelfCfg()
+            local c = O.cfg
             if c.close_only_menu then
                 stats.menu_close_only = stats.menu_close_only + 1
                 log("StartMenu.open close_only=yes side=%s override=%s context=%s",
@@ -703,7 +661,7 @@ local function hookStartMenu()
                 log("StartMenu.open close_only=no context=%s", q(context))
             end
             local t0 = now_ms()
-            local r = { pcall(O, bw, bottom_inset, burger_dimen, context, burger_art, anchor_top, side_override, ...) }
+            local r = { pcall(orig, bw, bottom_inset, burger_dimen, context, burger_art, anchor_top, side_override, ...) }
             local ms = now_ms() - t0
             if not r[1] then
                 stats.errors = stats.errors + 1
@@ -721,7 +679,7 @@ local function hookStartMenu()
         StartMenu._loadItems = function(self, ...)
             if not on() then return L(self, ...) end
             local items = L(self, ...)
-            local c = orbitshelfCfg()
+            local c = O.cfg
             local n = type(items) == "table" and #items or 0
             if c.close_only_menu then
                 log("StartMenu._loadItems close_only: %d entries", n)
@@ -745,42 +703,42 @@ local function hookFooterClose()
     BW._orbitshelf_diag_flat = true
 
     if type(BW._buildStartMenuIcon) == "function" then
-        local O = BW._buildStartMenuIcon
+        local orig = BW._buildStartMenuIcon
         BW._buildStartMenuIcon = function(self, ...)
-            if not on() then return O(self, ...) end
-            local c = orbitshelfCfg()
+            if not on() then return orig(self, ...) end
+            local c = O.cfg
             if c.close_only_menu then
                 stats.close_x_built = stats.close_x_built + 1
                 if stats.close_x_built <= 3 then
                     log("footer button: close X (close_only=yes side=%s)", q(c.close_menu_side))
                 end
             end
-            return O(self, ...)
+            return orig(self, ...)
         end
         log("hook BookshelfWidget._buildStartMenuIcon: applied")
     end
 
     if type(BW._openStartMenu) == "function" then
-        local O = BW._openStartMenu
+        local orig = BW._openStartMenu
         BW._openStartMenu = function(self, force, ...)
-            if not on() then return O(self, force, ...) end
-            local c = orbitshelfCfg()
+            if not on() then return orig(self, force, ...) end
+            local c = O.cfg
             if c.close_only_menu then
                 stats.close_direct = stats.close_direct + 1
                 log("start menu request -> direct close (force=%s)", q(force))
             end
-            return O(self, force, ...)
+            return orig(self, force, ...)
         end
         log("hook BookshelfWidget._openStartMenu: applied")
     end
 
     if type(BW.onClose) == "function" then
-        local O = BW.onClose
+        local orig = BW.onClose
         BW.onClose = function(self, ...)
-            if on() and orbitshelfCfg().close_only_menu then
+            if on() and O.cfg.close_only_menu then
                 log("BookshelfWidget:onClose (close_only=yes)")
             end
-            return O(self, ...)
+            return orig(self, ...)
         end
         log("hook BookshelfWidget.onClose: applied")
     end
@@ -795,16 +753,16 @@ local function hookFooterCritterLog()
     if BW._orbitshelf_diag_critter then return true end
     if type(BW._buildPaginationFooter) ~= "function" then return false end
     BW._orbitshelf_diag_critter = true
-    local O = BW._buildPaginationFooter
+    local orig = BW._buildPaginationFooter
     local last_text
     BW._buildPaginationFooter = function(self, ...)
-        local r = { pcall(O, self, ...) }
+        local r = { pcall(orig, self, ...) }
         if not r[1] then
             stats.errors = stats.errors + 1
             log("ERROR footer build failed: %s", tostring(r[2]))
             error(r[2], 0)
         end
-        if on() and orbitshelfCfg().footer_critter then
+        if on() and O.cfg.footer_critter then
             local c = package.loaded["orbitshelf_critter_last"]
             if type(c) == "table" and c.text ~= last_text then
                 last_text = c.text
@@ -826,7 +784,7 @@ end
 local function hookLogger()
     if logger._orbitshelf_diag then return end
     logger._orbitshelf_diag = true
-    for _, meth in ipairs({ "warn", "err", "error" }) do
+    for _i, meth in ipairs({ "warn", "err", "error" }) do
         local orig = logger[meth]
         if type(orig) == "function" then
             logger[meth] = function(...)
@@ -870,7 +828,7 @@ local function tryHooks()
     snapshot("boot")
     hookLogger()
     hookApiClient()
-    local bs = getBookshelf()
+    local bs = O.getBookshelf()
     if bs then hookBookshelf(bs) else log("Bookshelf not ready at boot; will retry") end
     hookHero()
     hookStartMenu()
@@ -889,10 +847,10 @@ UIManager:nextTick(function()
 end)
 
 -- Retry Bookshelf attachment (loads after patches)
-for _, delay in ipairs({ 1, 3, 8 }) do
+for _i, delay in ipairs({ 1, 3, 8 }) do
     UIManager:scheduleIn(delay, function()
         if not on() then return end
-        local bs = getBookshelf()
+        local bs = O.getBookshelf()
         if bs then
             hookBookshelf(bs)
             hookHero()

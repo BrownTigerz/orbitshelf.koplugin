@@ -1,6 +1,6 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
 local O = require("orbitshelf_core")
-local Offline, SOURCE_ID, T, TAG, UIManager, _ = O.Offline, O.SOURCE_ID, O.T, O.TAG, O.UIManager, O._
+local SOURCE_ID, T, TAG, UIManager, _ = O.SOURCE_ID, O.T, O.TAG, O.UIManager, O._
 local bookIdForPath, cfg, clearPageCache, downloadBookOrbitBook, getBookshelf, isWifiOn = O.bookIdForPath, O.cfg, O.clearPageCache, O.downloadBookOrbitBook, O.getBookshelf, O.isWifiOn
 local lfs, liveBookPath, logger, openInBookOrbit, removeFromDevice, savePageCache = O.lfs, O.liveBookPath, O.logger, O.openInBookOrbit, O.removeFromDevice, O.savePageCache
 
@@ -186,6 +186,31 @@ end
 
 local ICON_SYNC, ICON_REMOVE, ICON_ORBIT = "\u{F021}", "\u{F1F8}", "\u{F08E}"
 
+-- The hero's own font (Bookshelf's metadata / description region face, or its
+-- infofont), at our size, so the buttons and the status line match the rest of the
+-- hero instead of KOReader's UI font.
+local hero_face_name -- set per hero build from its regions
+-- Bookshelf's Text Size setting, so our small line scales with the hero's text
+local function heroScaled(size)
+    local ok, BS = pcall(require, "lib/bookshelf_settings_store")
+    local scale = ok and type(BS) == "table" and type(BS.read) == "function"
+        and tonumber((select(2, pcall(BS.read, "font_scale")))) or 100
+    return math.max(8, math.floor(size * scale / 100 + 0.5))
+end
+local function heroFace(size)
+    local Font = require("ui/font")
+    if hero_face_name then
+        local ok, face = pcall(Font.getFace, Font, hero_face_name, size)
+        if ok and face then return face end
+    end
+    local okB, BFont = pcall(require, "lib/bookshelf_fonts")
+    if okB and type(BFont) == "table" and type(BFont.getFace) == "function" then
+        local ok, face = pcall(BFont.getFace, BFont, "infofont", size)
+        if ok and face then return face end
+    end
+    return Font:getFace("infofont", size)
+end
+
 local function buildHeroPills(book, width)
     -- on the device: small icons instead (heroIconsFor), so the description has room
     if bookOnDevice(book) then return nil end
@@ -195,33 +220,54 @@ local function buildHeroPills(book, width)
     local ok_hg, HorizontalGroup = pcall(require, "ui/widget/horizontalgroup")
     local ok_tw, TextWidget = pcall(require, "ui/widget/textwidget")
     local ok_fc, FrameContainer = pcall(require, "ui/widget/container/framecontainer")
-    local ok_font, Font = pcall(require, "ui/font")
     local ok_geom, Geom = pcall(require, "ui/geometry")
     local ok_gr, GestureRange = pcall(require, "ui/gesturerange")
     local ok_hs, HorizontalSpan = pcall(require, "ui/widget/horizontalspan")
     local ok_bb, Blitbuffer = pcall(require, "ffi/blitbuffer")
-    if not (ok_ic and ok_hg and ok_tw and ok_fc and ok_font and ok_geom and ok_gr) then
+    if not (ok_ic and ok_hg and ok_tw and ok_fc and ok_geom and ok_gr) then
         return nil
     end
     -- small and thin, so the description keeps its room
     local size = buttonSize()
-    local face = Font:getFace("cfont", size.font)
+    local face = heroFace(size.font)
     local Screen = require("device").screen
     local gap = Screen:scaleBySize(size.gap)
     local row = HorizontalGroup:new{ align = "center" }
+    local pad = Screen:scaleBySize(size.ph)
+    -- Labels at their own width; only when they don't all fit does the widest one
+    -- give up the difference (it used to be an equal share each, so "Open In
+    -- BookOrbit" was cut even with room to spare next to a short "Download").
+    -- Text is centred on its capitals, not on the font's line box (which keeps
+    -- room for descenders below and sat the words a little high).
+    local labels, widths, total = {}, {}, 0
+    for i, a in ipairs(actions) do
+        -- Wi-Fi off: Download looks dimmed (a tap still offers to turn Wi-Fi on)
+        local dim = a.needs_wifi and ok_bb and not isWifiOn()
+        labels[i] = TextWidget:new{
+            text = a.text,
+            face = face,
+            padding = 0,
+            fgcolor = dim and Blitbuffer.gray(0.45) or nil,
+        }
+        labels[i].dim = dim
+        widths[i] = labels[i]:getSize().w
+        total = total + widths[i]
+    end
+    local avail = (width or 200) - gap * (#actions - 1) - #actions * (2 * pad + 2)
+    if total > avail then
+        local widest = 1
+        for i = 2, #widths do if widths[i] > widths[widest] then widest = i end end
+        labels[widest]:setMaxWidth(math.max(Screen:scaleBySize(24), widths[widest] - (total - avail)))
+    end
     for i, a in ipairs(actions) do
         if i > 1 and ok_hs then
             row[#row + 1] = HorizontalSpan:new{ width = gap }
         end
-        local pad = Screen:scaleBySize(size.ph)
-        -- Wi-Fi off: Download looks dimmed (a tap still offers to turn Wi-Fi on)
-        local dim = a.needs_wifi and ok_bb and not isWifiOn()
-        local label = TextWidget:new{
-            text = a.text,
-            face = face,
-            fgcolor = dim and Blitbuffer.gray(0.45) or nil,
-            max_width = math.floor(((width or 200) - gap * (#actions - 1)) / #actions) - 2 * pad - 2,
-        }
+        local label, dim = labels[i], labels[i].dim
+        local lh = label:getSize().h
+        local fsize = tonumber(face and face.size) or lh / 1.4
+        label.forced_height = lh
+        label.forced_baseline = math.floor((lh + 0.7 * fsize) / 2 + 0.5)
         local frame = FrameContainer:new{
             bordersize = 1,
             color = dim and Blitbuffer.gray(0.45) or nil,
@@ -316,9 +362,16 @@ local function hookHero()
                         O.showDescription(book)
                     end }}
                 end
+                if O.canAddToCollection(book) then
+                    rows[#rows + 1] = {{ text = _("Add To Collection"), callback = function()
+                        UIManager:close(dlg)
+                        O.addToCollection(book)
+                    end }}
+                end
                 rows[#rows + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }}
                 dlg = ButtonDialog:new{ title = book.title or _("Book"), buttons = rows }
                 UIManager:show(dlg)
+                if O.cfg.flash_hold_menu then O.flashPopup(dlg) end
                 return true
             end
             if orig_hold then return orig_hold(self, ...) end
@@ -333,6 +386,11 @@ local function hookHero()
         O.remember(HeroCard, "_buildRightColumn")
         local orig_col = HeroCard._buildRightColumn
         HeroCard._buildRightColumn = function(self, book, regions, state, dimen, ...)
+            do
+                local r = type(regions) == "table" and (regions.metadata or regions.description or regions.author)
+                hero_face_name = type(r) == "table" and type(r.font_face) == "string" and r.font_face ~= ""
+                    and r.font_face or nil
+            end
             if not asBookOrbit(book) then return orig_col(self, book, regions, state, dimen, ...) end
 
             local okG, Geom = pcall(require, "ui/geometry")
@@ -378,6 +436,7 @@ local function hookHero()
                 return okS and sz or nil
             end
             local psz, isz = sizeOf(pills), sizeOf(icons)
+            -- the hero's own font for what we add (see heroFace)
             local row_h = math.max(psz and psz.h or 0, isz and isz.h or 0)
             -- Offline Library: a small line for a book not on the device, at the top
             -- right next to the rating stars (over the buttons when there's no room)
@@ -385,11 +444,10 @@ local function hookHero()
             if cfg.offline_library and not book.is_folder and not bookOnDevice(book) then
                 pcall(function()
                     local TextWidget = require("ui/widget/textwidget")
-                    local Font = require("ui/font")
                     local Blitbuffer = require("ffi/blitbuffer")
                     status = TextWidget:new{
                         text = book.bookorbit_saved and _("Not On Device · Saved Offline") or _("Not On Device"),
-                        face = Font:getFace("cfont", 12),
+                        face = heroFace(heroScaled(12)),
                         fgcolor = Blitbuffer.gray(0.6),
                         max_width = dimen.w,
                     }
@@ -404,7 +462,16 @@ local function hookHero()
                 if used > 0 then
                     cd = Geom:new{ w = dimen.w, h = math.max(math.floor(dimen.h / 2), dimen.h - used) }
                 end
-                return orig_col(self, book, regions, state, cd, unpack(rest))
+                if not cfg.diagnostics then
+                    return orig_col(self, book, regions, state, cd, unpack(rest))
+                end
+                -- Diagnostics: how much of the hero's time is Bookshelf's own build
+                local okT, time = pcall(require, "ui/time")
+                local function ms() return okT and time.now and time.to_ms(time.now()) or os.clock() * 1000 end
+                local t0 = ms()
+                local col = orig_col(self, book, regions, state, cd, unpack(rest))
+                O.hero_bookshelf_ms = (O.hero_bookshelf_ms or 0) + (ms() - t0)
+                return col
             end
             local column = build(0)
             -- where the stars row is: under the status strip, first in the column's top
@@ -414,12 +481,22 @@ local function hookHero()
                     local strip = type(self._status_strip_widgets) == "table" and self._status_strip_widgets or {}
                     local y = 0
                     for _i, w in ipairs(strip) do y = y + (w:getSize().h or 0) end
+                    -- only when Bookshelf draws its rating row there (the hero's Rating
+                    -- region on); otherwise that first row is the title
+                    local rr = type(regions) == "table" and regions.rating
+                    if not (rr and not book.is_remote) then return nil end
+                    -- Bookshelf draws it for tappable stars (Rating on) or Hardcover stars
+                    if not ((not rr.disabled and self.on_rating_change ~= nil) or book.hardcover_rating ~= nil) then
+                        return nil
+                    end
                     local stars = top[#strip + 1]
                     if not stars then return nil end
                     local st = stars:getSize()
-                    -- only next to a short row (the stars), never over a title
-                    if not (st and st.w + ssz.w + Screen_gap() <= dimen.w and st.h <= ssz.h * 3) then return nil end
-                    return { x = dimen.w - ssz.w, y = y + math.max(0, math.floor((st.h - ssz.h) / 2)) }
+                    if not (st and st.w + ssz.w + Screen_gap() <= dimen.w and st.h <= ssz.h * 2) then return nil end
+                    -- a little in from the right edge, so it doesn't touch the frame
+                    local inset = math.floor(Screen_gap() / 2)
+                    return { x = math.max(0, dimen.w - ssz.w - inset),
+                        y = y + math.max(0, math.floor((st.h - ssz.h) / 2)) }
                 end)
                 return okS and spot or nil
             end
@@ -429,8 +506,12 @@ local function hookHero()
                 if spot then
                     status.overlap_offset = { spot.x, spot.y }
                 else
+                    -- no rating row (list view, or Rating off): right-aligned just over the
+                    -- buttons, the column built that much shorter so nothing overlaps
                     column = build(ssz.h + 4)
-                    status.overlap_offset = { 0, math.max(0, dimen.h - (row_h > 0 and row_h + 4 or 0) - ssz.h) }
+                    local inset = math.floor(Screen_gap() / 2)
+                    status.overlap_offset = { math.max(0, dimen.w - ssz.w - inset),
+                        math.max(0, dimen.h - (row_h > 0 and row_h + 4 or 0) - ssz.h) }
                 end
                 extras[#extras + 1] = status
             end
@@ -468,9 +549,13 @@ local function hookFlash()
     O.remember(BW, "_swapHeroInPlace")
     local orig_swap = BW._swapHeroInPlace
     if type(orig_swap) == "function" then
+        local swaps = 0
         BW._swapHeroInPlace = function(self, ...)
             local scope
-            if cfg.flash_hero then
+            -- every Nth change (Hero > Flash): the others stay quick partial refreshes
+            local every = math.max(1, tonumber(cfg.flash_hero_every) or 1)
+            if cfg.flash_hero then swaps = swaps + 1 end
+            if cfg.flash_hero and swaps % every == 0 then
                 pcall(function()
                     local old = self._hero_parent and self._hero_parent[1]
                     local d = old and old.dimen
@@ -499,8 +584,36 @@ local function hookFlash()
     end
 end
 
+-- ---- Flash: Bookshelf's own popups ------------------------------------------------------
+-- Bookshelf's book menu (hold a book on the device) and its shelf editor (hold a shelf
+-- tab) flash when they open and close, each with its own Flash setting. Hooked only once
+-- one of them is turned on, so Bookshelf is untouched otherwise.
+local function hookPopupFlash()
+    if not (cfg.flash_book_menu or cfg.flash_shelf_editor) then return true end
+    local okW, BW = pcall(require, "lib/bookshelf_widget")
+    if okW and type(BW) == "table" and type(BW._showBookDetail) == "function" and not BW._orbitshelf_flash_detail then
+        BW._orbitshelf_flash_detail = true
+        O.remember(BW, "_showBookDetail")
+        local orig = BW._showBookDetail
+        BW._showBookDetail = function(...)
+            return O.flashShownBy("flash_book_menu", orig, ...)
+        end
+    end
+    local okE, Editor = pcall(require, "lib/bookshelf_chip_editor")
+    if okE and type(Editor) == "table" and type(Editor.editTab) == "function" and not Editor._orbitshelf_flash_edit then
+        Editor._orbitshelf_flash_edit = true
+        O.remember(Editor, "editTab")
+        local orig = Editor.editTab
+        Editor.editTab = function(...)
+            return O.flashShownBy("flash_shelf_editor", orig, ...)
+        end
+    end
+    O.arm()
+    return true
+end
 
 -- shared with the other files
+O.hookPopupFlash = hookPopupFlash
 O.hookFlash = hookFlash
 O.hookHero = hookHero
 return O

@@ -722,7 +722,7 @@ local function hookFooterCritter()
         local edge_w = math.floor(strip_w * 0.12)
         local mid_w = strip_w - 2 * edge_w
 
-        local critter, _line = buildFooterCritter(self, mid_w, h)
+        local critter = buildFooterCritter(self, mid_w, h)
 
         -- Invisible edge buttons: still page with left/right taps
         local function step(dir)

@@ -8,7 +8,7 @@ OrbitShelf is a KOReader plugin that connects [Bookshelf](https://github.com/And
 
 | | |
 |---|---|
-| **Version** | 1.2.5 |
+| **Version** | 1.2.20 |
 | **KOReader** | v2026.07 or newer |
 | **Needs** | [bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin) (Bookshelf 6.x recommended) and bookorbit.koplugin, signed in |
 | **Optional** | SimpleUI (for the footer critter) |
@@ -18,13 +18,16 @@ OrbitShelf is a KOReader plugin that connects [Bookshelf](https://github.com/And
 
 ## Features
 
-- **BookOrbit shelves in Bookshelf.** A BookOrbit shelf source with Library, Recently added, Recently read, Series, Authors, Genres and collections. Series, Authors and Genres open as folders.
+- **BookOrbit shelves in Bookshelf.** A BookOrbit shelf source with Library, Recently added, Recently read, Series, Authors, Genres, collections, smart scopes and libraries (one shelf per BookOrbit library, optionally grouped by Series, Authors or Genres). Series, Authors and Genres open as folders. A new shelf is named after its list (Authors, Recently added, the collection …) unless you name it yourself.
 - **Books not on the device show too.** Tap one to **Download** it, **Open In BookOrbit**, or read its **Book Description**. Nothing downloads until you ask.
 - **Hero buttons.** Download / Open In BookOrbit for books not on the device; small Remove / Open / Sync icons for books that are. Three button sizes.
 - **Offline Library.** Saves every book's cover and details (description, pages, published, language, genres), about 25 KB a book, so the full library shows with Wi-Fi off. Book files are never downloaded by it.
 - **Genres.** BookOrbit's lists don't include genres, so OrbitShelf looks them up once per book in the background and keeps them.
+- **Search BookOrbit.** Bookshelf's search can look in your BookOrbit library instead of the device (works offline from the saved list).
+- **Return To.** Bookshelf can always open (and come back from a book) on a shelf you pick, or keep its own last-shelf behaviour.
+- **Add To Collection.** Hold a book (or tap one not on the device) to add it to or remove it from your BookOrbit collections. Signs in like the BookOrbit website; the password can be saved encrypted, shared with BookOrbit Tweaks if you have it.
 - **Book Description popup.** A compact window that sizes itself to the text. Tap outside or the X to close.
-- **E-ink options.** Flash the hero when it changes, or flash on every shelf page turn, to clear ghosting.
+- **E-ink options.** A Flash menu to clear ghosting where you need it: the hero, shelf page turns, Book Description, the hold menus, the Download window and Bookshelf's shelf editor.
 - **Footer critter and close button.** Your SimpleUI critter in place of the page numbers, and an optional one-tap close X.
 - **Battery-friendly.** Lookups run in a background process so the screen stays responsive. They pause on sleep or Wi-Fi off, and nothing runs on a timer.
 - **Tells you what broke.** Problems go to `crash.log`, including which other patch or plugin interfered.
@@ -91,16 +94,21 @@ All under **Tools → OrbitShelf** (or **Tools → Add-ons → OrbitShelf** if y
 |---|---|---|
 | **Use BookOrbit In Bookshelf** | Adds the BookOrbit shelf source | Off |
 | **Rewrite Stock Series / Authors / Genres** | Points Bookshelf's own Series, Authors, Genres, Recent and Latest chips at BookOrbit | Off |
-| **Hero → Download / Remove Buttons** | Buttons on the hero for BookOrbit books | Off |
-| **Hero → Sync Button** | Refreshes the lists and runs BookOrbit's sync | Off |
-| **Hero → Button Size** | Small, Medium or Large | Small |
-| **Hero → Flash When It Changes** | Clears ghosting when the hero shows another book | Off |
-| **Shelf → Flash On Every Page Turn** | Full refresh on every shelf page | Off |
-| **Shelf → Build / Rebuild Genres** | Looks up genres in the background | — |
+| **Return To** | Shelf Bookshelf shows when it opens or you close a book: Bookshelf's Choice (last shelf) or one you pick | Bookshelf's Choice |
+| **Add To Collection → In Book Menu** | Add To Collection when holding the hero or tapping a book not on the device | Off |
+| **Add To Collection → Forget Saved BookOrbit Password** / **About** | Removes the saved password / what's saved and where | — |
 | **Offline Library → Keep Library Offline** | Saves every book's cover and details on the device | Off |
 | **Offline Library → Check For New Books** | On Wi-Fi Connect, On Refresh / Sync, Both, or Update Now Only | On Wi-Fi Connect |
 | **Offline Library → Update Now** | Pulls the list fresh and saves anything new | — |
 | **Offline Library → Delete Offline Library…** | Removes saved details and trims covers | — |
+| **Hero → Download / Remove Buttons** | Buttons on the hero for BookOrbit books | Off |
+| **Hero → Sync Button** | Refreshes the lists and runs BookOrbit's sync | Off |
+| **Hero → Button Size** | Small, Medium or Large | Small |
+| **Shelf → Search BookOrbit** | Bookshelf's search looks in BookOrbit instead of the device | Off |
+| **Shelf → Build / Rebuild Genres** | Looks up genres in the background | — |
+| **Flash → Hero When It Changes** / **Hero: Every Change** | Clears ghosting when the hero shows another book; every change or every 4th / 6th | Off |
+| **Flash → Shelf Page Turns** | Full refresh on every shelf page | Off |
+| **Flash → Book Description / Hold Menu / Download Window / Bookshelf's Book Menu / Shelf Editor** | That popup's box flashes when it opens and closes | Off |
 | **Footer → Footer Critter** | SimpleUI critter in place of the page numbers | Off |
 | **Footer → Critter Says** | Page, Witty, Picks, Sayings | All on |
 | **Footer → Close Only** / **Close Control** | One-tap close X; left, right or Bookshelf's side | Off |
@@ -110,7 +118,7 @@ All under **Tools → OrbitShelf** (or **Tools → Add-ons → OrbitShelf** if y
 ### How Offline Library works
 
 - **Start** asks first, showing the number of books and a rough size and time.
-- It works three batches at a time in the background, and the shelf fills in as it goes.
+- It works two batches at a time in the background, and the shelf fills in as it goes.
 - **Wi-Fi off or sleep** pauses it. It carries on when Wi-Fi is back.
 - After the first run, only new or changed books are looked up. **Check For New Books** sets when that happens.
 - **Turning it off** asks whether to keep or delete what's saved.
@@ -127,7 +135,7 @@ OrbitShelf writes to KOReader's `crash.log` (`.adds/koreader/crash.log` on Kobo)
 - A part that failed, with where. Bookshelf's own version runs instead, so the screen doesn't break.
 - Another patch or plugin that changed a Bookshelf function OrbitShelf uses, or replaced the BookOrbit shelf source, named by file. For example:
   ```
-  orbitshelf 1.2.5: Bookshelf.onHold (hero hold menu) was changed after OrbitShelf by plugins/other.koplugin/main.lua
+  orbitshelf 1.2.20: Bookshelf.onHold (hero hold menu) was changed after OrbitShelf by plugins/other.koplugin/main.lua
   ```
 
 **For more detail**, turn on **Diagnostics**, reproduce the problem within 30 minutes, then share `crash.log`. Diagnostics lines are tagged `orbitshelf <version> diag:`.
@@ -139,7 +147,7 @@ OrbitShelf writes to KOReader's `crash.log` (`.adds/koreader/crash.log` on Kobo)
 | No BookOrbit shelf | Check that Bookshelf and BookOrbit are installed, BookOrbit is signed in, and **Use BookOrbit In Bookshelf** is on. `crash.log` will say which one is missing. |
 | Genres shelf empty | Open it once and tap **Start**, or use **Shelf → Build Genres** with Wi-Fi on. |
 | Closing the shelf shows the file browser | That's Bookshelf's **Instant book close (beta)**, not OrbitShelf. Turn it off in Bookshelf's settings. |
-| Ghosting on the hero or shelf | Turn on **Hero → Flash When It Changes** or **Shelf → Flash On Every Page Turn**. |
+| Ghosting on the hero, shelf or a popup | Turn on what you need under **Flash**. |
 
 ---
 
@@ -155,13 +163,15 @@ orbitshelf.koplugin/
 ├── orbitshelf_source.lua      the Bookshelf source and its shelves
 ├── orbitshelf_hero.lua        hero buttons, status line, flash
 ├── orbitshelf_footer.lua      footer critter, close X
+├── orbitshelf_collections.lua Add To Collection (website sign-in, saved password)
 ├── orbitshelf_menu.lua        settings menu
 ├── orbitshelf_diag.lua        Diagnostics (loaded only while it's on)
 └── README.md
 ```
 
 **What it stores on the device**
-- Settings, genres and saved lists live in KOReader's settings.
+- Settings and genres live in KOReader's settings.
+- Saved lists are in `koreader/orbitshelf-lists.lua`.
 - Offline details are in `koreader/orbitshelf-library.txt`.
 - Covers are in `koreader/cache/bookorbit/`, shared with BookOrbit.
 
@@ -171,6 +181,20 @@ orbitshelf.koplugin/
 
 The full history is at the top of `main.lua`.
 
+- **1.2.20:** Lookups two at a time: same speed, less battery.
+- **1.2.19:** New BookOrbit shelves are named after their list; popup flashes cover only the popup.
+- **1.2.18:** BookOrbit shelf ready at start-up without waiting on Bookshelf; sturdier background results.
+- **1.2.17:** New covers download in the background (no freeze); saved lists in their own file; lighter background checks.
+- **1.2.16:** Flash menu: every flash option in one place, plus flash for Book Description, the hold menus, the Download window and Bookshelf's shelf editor.
+- **1.2.15:** No blank bar left on the shelf after signing in for Add To Collection.
+- **1.2.13:** Return To in the menu; menu reordered; hero button text centred and no longer cut short.
+- **1.2.12:** Add To Collection.
+- **1.2.11:** Hero pills and status line match the hero's font and line up in list view.
+- **1.2.10:** Hero flash every 4th / 6th change; old lists show at once and refresh in the background.
+- **1.2.9:** Corner notes fit on one line; Diagnostics time taps on books.
+- **1.2.8:** Group By for Library, Collection and Smart Scope shelves.
+- **1.2.7:** Library shelves (one shelf per BookOrbit library).
+- **1.2.6:** Smart Scope shelves; Search BookOrbit; downloads run in the background with a corner note.
 - **1.2.5:** Reports show BookOrbit's version; Diagnostics lists every setting.
 - **1.2.4:** Check For New Books option. README.
 - **1.2.3:** Fixed a crash when scrolling a long description, and the screen freezing during lookups.
