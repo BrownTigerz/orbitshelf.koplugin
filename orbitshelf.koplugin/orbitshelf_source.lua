@@ -103,7 +103,11 @@ end
 
 -- Build folder records for series/authors/genres from the (cached) library list, or
 -- from one list's books when base (that list's BookOrbit query) is given.
-local function groupFolders(mode, base)
+-- with_books (Spines): each folder also carries its books, in the folder's order.
+-- Bookshelf's spine shelf stands a record with `books` as a run of their spines
+-- under the group's name, the way its own Series / Authors shelves do; without them
+-- a folder stands face-out as one tile.
+local function groupFolders(mode, base, with_books)
     local books = fetchBoPage(base or { sort = "title" }, false) or {}
     local buckets, order = {}, {}
     for _i, rec in ipairs(books) do
@@ -143,6 +147,20 @@ local function groupFolders(mode, base)
             bookorbit_group_key = b.title,
             source_kind = SOURCE_ID,
         }
+        if with_books then
+            local members = {}
+            for _j, rec in ipairs(b.books) do
+                if rec.source_kind == nil then rec.source_kind = SOURCE_ID end
+                members[#members + 1] = rec
+            end
+            sortWith(members, GROUP_BOOK_ORDER[mode] or GROUP_BOOK_ORDER.series, function(x, y)
+                local nx = tonumber(x.series_index) or tonumber(x.series_num) or 1e9
+                local ny = tonumber(y.series_index) or tonumber(y.series_num) or 1e9
+                if nx ~= ny then return nx < ny end
+                return tostring(x.title or ""):lower() < tostring(y.title or ""):lower()
+            end)
+            folders[#folders].books = members
+        end
     end
     sortWith(folders, GROUP_CARD_ORDER[mode] or GROUP_CARD_ORDER.series, function(a, b)
         return (a.title or ""):lower() < (b.title or ""):lower()
@@ -398,6 +416,12 @@ end
 local function buildSpec()
     return {
         api = 1,
+        -- Spines for BookOrbit shelves (Bookshelf 6.4, or its feat-588 test branch; older
+        -- Bookshelf ignores it). A spine shelf asks for the whole level at once: fetch
+        -- returns what's saved, covers and details arrive in the background and
+        -- sourceChanged lays it out again. Spine colour comes from cover_image_path,
+        -- thickness from page_count (Offline Library, or looked-up details).
+        spines = true,
         label = function() return _("BookOrbit") end,
         available = function()
             return cfg.use_bookorbit and bookOrbitInstalled() and bookOrbitSignedIn()
@@ -493,6 +517,8 @@ local function buildSpec()
             if drill and drill.group == "search" then
                 return slice(searchBookOrbit(drill.key), offset, limit)
             end
+            -- a spine shelf asks for the whole level at once (offset 0, a huge limit)
+            local whole = (tonumber(offset) or 0) == 0 and (tonumber(limit) or 0) >= 10000
             local group_by = SCOPED[mode] and type(source) == "table" and GROUP_BY[source.group_by or ""]
                 and source.group_by or nil
             if drill and (drill.group == "series" or drill.group == "authors" or drill.group == "genres") then
@@ -500,7 +526,7 @@ local function buildSpec()
                 return slice(items, offset, limit)
             end
             if group_by then
-                local folders = groupFolders(group_by, modeParams(source))
+                local folders = groupFolders(group_by, modeParams(source), whole)
                 if group_by == "genres" then
                     Genres.listen()
                     Genres.offer()
@@ -508,7 +534,7 @@ local function buildSpec()
                 return slice(folders, offset, limit)
             end
             if mode == "series" or mode == "authors" or mode == "genres" then
-                local folders = groupFolders(mode)
+                local folders = groupFolders(mode, nil, whole)
                 if mode == "genres" then
                     -- after the list is in, so the count is right
                     Genres.listen()

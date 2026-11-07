@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.21
+Version: 1.2.23
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.21:". At start it writes the
+Problems go to crash.log, tagged "orbitshelf 1.2.23:". At start it writes the
 KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
 patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -85,6 +85,13 @@ orbitshelf_collections.lua (Add To Collection),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  1.2.23 2026-11-07  Spines: Series, Authors and Genres (and Group By shelves) stand as runs
+                     of their books' spines under each group's name, like Bookshelf's own
+                     Series shelf, instead of one face-out tile per group. Covers view is
+                     unchanged: groups are still folders there.
+  1.2.22 2026-11-07  Spines for BookOrbit shelves, with a Bookshelf that offers them for
+                     fetch-mode sources (6.4, or its feat-588 test branch). Covers colour
+                     the spines, page counts set their thickness; folders stand face-out.
   1.2.21 2026-11-07  Footer critter stands on SimpleUI 3.0.3's ground shadow, like the home
                      screen's.
   1.2.20 2026-11-06  Genres / Offline Library look books up two batches at a time (was three):

@@ -2,7 +2,7 @@
 
 BookOrbit shelves inside [Bookshelf](https://github.com/AndyHazz/bookshelf.koplugin): your whole BookOrbit library on the shelf, books on the device or not.
 
-**Version:** 1.2.21 · **Requires:** bookshelf.koplugin (source API 1; best with Bookshelf 6.x) and bookorbit.koplugin, signed in
+**Version:** 1.2.23 · **Requires:** bookshelf.koplugin (source API 1; best with Bookshelf 6.x) and bookorbit.koplugin, signed in
 
 ## Install
 
@@ -20,7 +20,7 @@ BookOrbit shelves inside [Bookshelf](https://github.com/AndyHazz/bookshelf.koplu
 
 Under **Tools → OrbitShelf**:
 
-- **Use BookOrbit In Bookshelf**: adds a **BookOrbit** shelf source, so books not on the device show too. Modes: Library, Recently added, Recently read, **Series**, **Authors**, **Genres**, collections, **smart scopes** and **libraries** (one shelf per BookOrbit library: add a shelf, pick BookOrbit, then **Library: <name>**). A Library, Collection or Smart Scope shelf can also use **Group By** in the shelf editor (None, Series, Authors or Genres) to show just its own books as folders. Series, Authors and Genres are folders: tap a group to see its books. A new shelf is named after its list (Authors, Recently added, the collection's name …) and follows it when you change the list, unless you've typed your own name.
+- **Use BookOrbit In Bookshelf**: adds a **BookOrbit** shelf source, so books not on the device show too. Modes: Library, Recently added, Recently read, **Series**, **Authors**, **Genres**, collections, **smart scopes** and **libraries** (one shelf per BookOrbit library: add a shelf, pick BookOrbit, then **Library: <name>**). A Library, Collection or Smart Scope shelf can also use **Group By** in the shelf editor (None, Series, Authors or Genres) to show just its own books as folders. Series, Authors and Genres are folders: tap a group to see its books. With Bookshelf 6.4 (or its feat-588 test branch) a BookOrbit shelf can be shown as **Spines** (pick it in the shelf editor): covers colour the spines, page counts (Offline Library) set their thickness, and Series, Authors and Genres stand as runs of spines under each group's name (tap a spine for that book). A new shelf is named after its list (Authors, Recently added, the collection's name …) and follows it when you change the list, unless you've typed your own name.
 - **Rewrite Stock Series / Authors / Genres**: points Bookshelf's own Series, Authors, Genres, Recent and Latest chips at BookOrbit. Turn it off and the stock chips come back.
 
 - **Return To**: which shelf Bookshelf shows when it opens or when you close a book. **Bookshelf's Choice** (default) keeps whatever shelf you were on; pick a shelf (Home, Authors, …) to always come back to it.
