@@ -639,7 +639,8 @@ local function buildFooterCritter(bw, max_w, h)
         local box_w = math.floor(max_w * 0.22)
         local aspect = critterAspect(path)
         if aspect then box_w = math.min(box_w, math.max(1, math.floor(inner_h * aspect + 0.5))) end
-        local sp = Sprite:new{ path = path, max_w = box_w, max_h = inner_h }
+        -- shadow: SimpleUI 3.0.3's ground shadow, like the home screen critter (older builds ignore it)
+        local sp = Sprite:new{ path = path, max_w = box_w, max_h = inner_h, shadow = true }
         if sp.dimen and sp.dimen.w > 0 then sprite = sp end
     end)
 

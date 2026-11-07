@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.20
+Version: 1.2.21
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.20:". At start it writes the
+Problems go to crash.log, tagged "orbitshelf 1.2.21:". At start it writes the
 KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
 patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -85,6 +85,8 @@ orbitshelf_collections.lua (Add To Collection),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  1.2.21 2026-11-07  Footer critter stands on SimpleUI 3.0.3's ground shadow, like the home
+                     screen's.
   1.2.20 2026-11-06  Genres / Offline Library look books up two batches at a time (was three):
                      about the same speed, less battery.
   1.2.19 2026-11-06  A new BookOrbit shelf is named after its list (Authors, Recently added,

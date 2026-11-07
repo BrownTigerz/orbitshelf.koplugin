@@ -2,7 +2,7 @@
 
 BookOrbit shelves inside [Bookshelf](https://github.com/AndyHazz/bookshelf.koplugin): your whole BookOrbit library on the shelf, books on the device or not.
 
-**Version:** 1.2.20 · **Requires:** bookshelf.koplugin (source API 1; best with Bookshelf 6.x) and bookorbit.koplugin, signed in
+**Version:** 1.2.21 · **Requires:** bookshelf.koplugin (source API 1; best with Bookshelf 6.x) and bookorbit.koplugin, signed in
 
 ## Install
 

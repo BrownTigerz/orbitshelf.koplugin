@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "1.2.20"
+local VERSION = "1.2.21"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"

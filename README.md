@@ -11,7 +11,7 @@ If this plugin is useful to you, you can [support my work on Ko-fi](https://ko-f
 
 | | |
 |---|---|
-| **Version** | 1.2.20 |
+| **Version** | 1.2.21 |
 | **KOReader** | v2026.07 or newer |
 | **Needs** | [bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin) (Bookshelf 6.x recommended) and bookorbit.koplugin, signed in |
 | **Optional** | SimpleUI (for the footer critter) |
@@ -138,7 +138,7 @@ OrbitShelf writes to KOReader's `crash.log` (`.adds/koreader/crash.log` on Kobo)
 - A part that failed, with where. Bookshelf's own version runs instead, so the screen doesn't break.
 - Another patch or plugin that changed a Bookshelf function OrbitShelf uses, or replaced the BookOrbit shelf source, named by file. For example:
   ```
-  orbitshelf 1.2.20: Bookshelf.onHold (hero hold menu) was changed after OrbitShelf by plugins/other.koplugin/main.lua
+  orbitshelf 1.2.21: Bookshelf.onHold (hero hold menu) was changed after OrbitShelf by plugins/other.koplugin/main.lua
   ```
 
 **For more detail**, turn on **Diagnostics**, reproduce the problem within 30 minutes, then share `crash.log`. Diagnostics lines are tagged `orbitshelf <version> diag:`.
@@ -184,6 +184,7 @@ orbitshelf.koplugin/
 
 The full history is at the top of `main.lua`.
 
+- **1.2.21:** Footer critter gets SimpleUI 3.0.3's ground shadow.
 - **1.2.20:** Lookups two at a time: same speed, less battery.
 - **1.2.19:** New BookOrbit shelves are named after their list; popup flashes cover only the popup.
 - **1.2.18:** BookOrbit shelf ready at start-up without waiting on Bookshelf; sturdier background results.
