@@ -4,6 +4,9 @@
 
 OrbitShelf is a KOReader plugin that connects [Bookshelf](https://github.com/AndyHazz/bookshelf.koplugin) to your [BookOrbit](https://github.com/bookorbit/bookorbit) server. Browse everything on the server by Series, Authors or Genres, download a book with one tap, and keep covers and descriptions offline so the shelf looks full even on a small device with Wi-Fi off.
 
+If this plugin is useful to you, you can [support my work on Ko-fi](https://ko-fi.com/browntigerz).
+
+
 ![OrbitShelf on the home shelf](images/orbitshelf-home.png)
 
 | | |
