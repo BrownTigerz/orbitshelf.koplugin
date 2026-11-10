@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "1.2.23"
+local VERSION = "1.2.24"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -52,6 +52,10 @@ local DEFAULTS = {
     flash_shelf_editor = false,    -- Bookshelf's shelf editor (hold a shelf tab)
     return_shelf = false,          -- shelf (Bookshelf tab id) to show on open / book close; false = Bookshelf's own
     add_to_collection = false,     -- Add To Collection row in the hold / Not On Device menus
+    bulk_download = false,         -- Bulk Download… row in the hold / Not On Device menus
+    bulk_remove = false,           -- Bulk Remove… row in the hold / book menus (books on the device)
+    read_status = false,           -- Reading Status… row in the hold / Not On Device / book menus
+    next_in_series = false,        -- after finishing a book, back home: offer the next in its series
     offline_library = false,       -- keep every book's details and cover on the device
     diagnostics = false,           -- write what OrbitShelf does to crash.log
     search_bookorbit = false,      -- Bookshelf's search looks in BookOrbit instead of the device

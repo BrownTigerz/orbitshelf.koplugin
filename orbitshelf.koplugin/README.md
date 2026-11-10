@@ -2,7 +2,7 @@
 
 BookOrbit shelves inside [Bookshelf](https://github.com/AndyHazz/bookshelf.koplugin): your whole BookOrbit library on the shelf, books on the device or not.
 
-**Version:** 1.2.23 · **Requires:** bookshelf.koplugin (source API 1; best with Bookshelf 6.x) and bookorbit.koplugin, signed in
+**Version:** 1.2.24 · **Requires:** bookshelf.koplugin (source API 1; best with Bookshelf 6.x) and bookorbit.koplugin, signed in
 
 ## Install
 
@@ -25,6 +25,8 @@ Under **Tools → OrbitShelf**:
 
 - **Return To**: which shelf Bookshelf shows when it opens or when you close a book. **Bookshelf's Choice** (default) keeps whatever shelf you were on; pick a shelf (Home, Authors, …) to always come back to it.
 - **Add To Collection**: see [Add To Collection](#add-to-collection) below.
+- **Extras**: see [Extras](#extras) below (Bulk Download, Bulk Remove, Reading Status, Next In Series).
+- **Shelf editor → Show**: All Books (default), **On Device** or **Not On Device**, so a shelf can be just what's on the Kobo, or a to-download list.
 
 **Offline Library** (off by default)
 - **Keep Library Offline**: saves every BookOrbit book's cover and details (description, pages, published, language, genres) on the device, so the whole library shows with Wi-Fi off. The books themselves aren't downloaded: those still show **Download** (dimmed with Wi-Fi off), and the hero says **Not On Device · Saved Offline** next to the rating stars (just above the buttons when there's no rating row, as in list view). About 25 KB a book. It runs in the background, pauses on Wi-Fi off or sleep, and carries on when Wi-Fi is back.
@@ -69,6 +71,18 @@ Turn on **Add To Collection → Add To Collection In Book Menu** (off by default
 
 BookOrbit's KOReader sign-in can't change collections, so it signs in like the website, with your BookOrbit **website** username and password. The first time, a notice explains what's saved and where (also under **About The Saved Password**). The sign-in box has a **Save password on this device** tick: only a sign-in BookOrbit accepted is saved, AES-encrypted with its key in a separate file, and never in Patch Backup & Restore's backups. **Forget Saved BookOrbit Password** clears it. It's the same sign-in, messages and saved password as the BookOrbit Tweaks patch, so if you have both they share one login, and with the patch installed its picker opens.
 
+## Extras
+
+Under **Extras**, each off by default.
+
+**Bulk Download**: hold a book that isn't on the device (or the hero) and tap **Bulk Download…**: a list of that shelf's books that aren't on the device, with the one you held ticked (✓). Tap books to tick or untick them, or **Select…** for **All**, **Same Series**, **Same Author** or **None**, then **Download**. It looks up their size (in one go for up to 100 books) and checks the free space first: one question with both, or a message when they won't fit. They download one at a time, with "Downloading 3 of 12" in the corner (and the % for big files), and the shelf redraws once at the end. A popup lists any that failed. While it runs, the same row says **Stop Bulk Download**: the book in progress finishes, then it stops. Wi-Fi going off stops it, with a popup saying how far it got. Sleep pauses it, and waking asks whether to continue. The row is dimmed with Wi-Fi off.
+
+**Bulk Remove**: hold a BookOrbit book that's on the device (the hero, or Bookshelf's book menu) and tap **Bulk Remove…**: the same list for that shelf's books on the device. Tick, confirm once, and they're removed from the device. They stay in BookOrbit.
+
+**Reading Status**: hold a BookOrbit book and tap **Reading Status…** to set it in BookOrbit: Want To Read, Reading, On Hold, Read, Abandoned or Unread. Handy for books read somewhere else. Needs Wi-Fi.
+
+**Next In Series**: finish a BookOrbit book and, if the next one in its series isn't on the device, you're asked once you're back on the home screen whether to download it. Nothing pops up inside the book. It uses the saved lists, so it knows the series once the shelf has loaded it.
+
 ## When something's wrong
 
 Problems go to **crash.log**, tagged `orbitshelf <version>:`, whether Diagnostics is on or not. Each one is written once per start:
@@ -80,6 +94,6 @@ To report a problem, send `crash.log`, ideally with **Diagnostics** turned on ju
 
 ## Files
 
-`main.lua` (start-up, menu, Wi-Fi and sleep) · `_meta.lua` · `orbitshelf_core.lua` (settings, crash.log) · `orbitshelf_bookorbit.lua` (BookOrbit lists, covers, offline details, download / remove, Book Description) · `orbitshelf_genres.lua` (background lookups) · `orbitshelf_source.lua` (the Bookshelf source and its shelves) · `orbitshelf_hero.lua` (hero buttons, flash) · `orbitshelf_footer.lua` (critter, close X) · `orbitshelf_collections.lua` (Add To Collection) · `orbitshelf_menu.lua` (settings) · `orbitshelf_diag.lua` (Diagnostics, loaded only while it's on)
+`main.lua` (start-up, menu, Wi-Fi and sleep) · `_meta.lua` · `orbitshelf_core.lua` (settings, crash.log) · `orbitshelf_bookorbit.lua` (BookOrbit lists, covers, offline details, download / remove, Book Description) · `orbitshelf_genres.lua` (background lookups) · `orbitshelf_source.lua` (the Bookshelf source and its shelves) · `orbitshelf_hero.lua` (hero buttons, flash) · `orbitshelf_footer.lua` (critter, close X) · `orbitshelf_collections.lua` (Add To Collection) · `orbitshelf_bulk.lua` (Bulk Download / Remove) · `orbitshelf_extras.lua` (Reading Status, Next In Series) · `orbitshelf_menu.lua` (settings) · `orbitshelf_diag.lua` (Diagnostics, loaded only while it's on)
 
 The full changelog is at the top of `main.lua`.

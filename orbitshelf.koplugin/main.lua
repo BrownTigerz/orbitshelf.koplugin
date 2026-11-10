@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.23
+Version: 1.2.24
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.23:". At start it writes the
+Problems go to crash.log, tagged "orbitshelf 1.2.24:". At start it writes the
 KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
 patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -81,10 +81,42 @@ crash.log), orbitshelf_bookorbit.lua (BookOrbit lists, covers, offline details,
 download / remove), orbitshelf_genres.lua (background lookups), orbitshelf_source.lua
 (the Bookshelf source and its shelves), orbitshelf_hero.lua (hero buttons, flash),
 orbitshelf_footer.lua (critter, close X), orbitshelf_menu.lua (settings menu),
-orbitshelf_collections.lua (Add To Collection),
+orbitshelf_collections.lua (Add To Collection), orbitshelf_bulk.lua (Bulk Download / Remove),
+orbitshelf_extras.lua (Reading Status, Next In Series),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  1.2.24 2026-11-10  New Extras menu, every option off by default:
+                     Bulk Download: hold a book that isn't on the device (or the hero),
+                     Bulk Download… lists that shelf's books not on the device, the held
+                     one ticked; Select… ticks All, Same Series, Same Author or None. A
+                     size and free-space check comes first (too big: says so and stops),
+                     then they download one at a time ("Downloading 3 of 12"), the shelf
+                     redraws once at the end and a popup lists any that failed. The row
+                     reads Stop Bulk Download while it runs. Wi-Fi off stops it (popup);
+                     sleep pauses it and waking asks whether to continue.
+                     Bulk Remove: the same list for the shelf's books on the device (from
+                     the hero or Bookshelf's book menu), one question, then removed; they
+                     stay in BookOrbit.
+                     Reading Status: Want To Read / Reading / On Hold / Read / Abandoned /
+                     Unread, set in BookOrbit from the hold menus and the book menu.
+                     Next In Series: finishing a BookOrbit book remembers the next one in
+                     its series when it isn't on the device; back on the home screen one
+                     question offers to download it (nothing pops up in the book).
+                   Shelf editor: Show All Books, On Device or Not On Device. A book
+                   moves between those shelves when it's downloaded or removed (a
+                   bulk download moves them all at the end).
+                   Downloads of 1.5 MB+ show their % in the corner note.
+                   Fix: OrbitShelf's BookOrbit calls now carry the device id, model
+                   and plugin version (BookOrbit's own settings when it's loaded), so
+                   the link after a download (match-check) works; the server answered
+                   400 without them and the book wasn't linked for syncing.
+                   Bulk Download's size check asks BookOrbit's bulk manifest (100
+                   books a call) instead of one call a book, and the Download row
+                   reads "Checking sizes…" meanwhile, so a second tap can't ask twice.
+                   Next In Series also asks when the book closes to Bookshelf (or
+                   anything full screen), and stays on top if Bookshelf or the home
+                   screen opens over it.
   1.2.23 2026-11-07  Spines: Series, Authors and Genres (and Group By shelves) stand as runs
                      of their books' spines under each group's name, like Bookshelf's own
                      Series shelf, instead of one face-out tile per group. Covers view is
@@ -250,6 +282,8 @@ require("orbitshelf_bookorbit")
 require("orbitshelf_collections")
 require("orbitshelf_genres")
 require("orbitshelf_source")
+require("orbitshelf_bulk")
+require("orbitshelf_extras")
 require("orbitshelf_hero")
 require("orbitshelf_footer")
 require("orbitshelf_menu")
@@ -318,6 +352,10 @@ function OrbitShelf:init()
     if self.ui and self.ui.menu and not self.ui.document then
         self.ui.menu:registerToMainMenu(self)
     end
+    -- back home after finishing a book: Next In Series asks once the home screen is up
+    if self.ui and not self.ui.document and O.Extras.hasPending() then
+        UIManager:scheduleIn(1, function() step("next in series", O.Extras.offerNext) end)
+    end
 end
 
 function OrbitShelf:addToMainMenu(menu_items)
@@ -332,7 +370,24 @@ end
 -- going to sleep: the background lookups stop (they carry on when Wi-Fi is back)
 function OrbitShelf:onSuspend()
     if O.Genres.running then step("sleep", O.Genres.stop, true) end
+    if O.Bulk.running() then step("bulk download pause", O.Bulk.pause) end
     step("save lists", O.flushPageCache)
+end
+
+-- awake again: a Bulk Download paused by sleep asks whether to continue, once the
+-- sleep screen is gone (with "tap to exit" the screen stays until OutOfScreenSaver)
+function OrbitShelf:onResume()
+    if O.Bulk.running() then step("bulk download resume", O.Bulk.offerResume) end
+end
+
+function OrbitShelf:onOutOfScreenSaver()
+    if O.Bulk.running() then step("bulk download resume", O.Bulk.offerResume) end
+    if O.Extras.hasPending() then step("next in series", O.Extras.offerNext) end
+end
+
+-- the last page of a book: Next In Series remembers what comes next (asks back home)
+function OrbitShelf:onEndOfBook()
+    if cfg.next_in_series then step("next in series", O.Extras.endOfBook, self.ui) end
 end
 
 -- KOReader saving its settings (closing a book, exit, sleep): the saved lists, if changed

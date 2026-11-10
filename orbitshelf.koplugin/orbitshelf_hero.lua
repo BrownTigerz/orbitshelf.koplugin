@@ -368,6 +368,11 @@ local function hookHero()
                         O.addToCollection(book)
                     end }}
                 end
+                local function closeDlg() UIManager:close(dlg) end
+                local status = O.readStatusRow(book, closeDlg)
+                if status then rows[#rows + 1] = { status } end
+                local bulk = O.Bulk.row(book, nil, closeDlg) or O.Bulk.removeRow(book, nil, closeDlg)
+                if bulk then rows[#rows + 1] = { bulk } end
                 rows[#rows + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }}
                 dlg = ButtonDialog:new{ title = book.title or _("Book"), buttons = rows }
                 UIManager:show(dlg)

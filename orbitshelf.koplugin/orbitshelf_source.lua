@@ -223,6 +223,49 @@ end
 -- time, plus whatever the Side Panel has saved.
 local COLLS_KEY = "orbitshelf_tweaks_collections"
 
+-- Bulk Download: the full list behind each shelf the source serves, so holding a
+-- book can list the rest of that shelf. Only a reference is kept (no copying).
+-- Show (shelf editor): All Books, On Device or Not On Device. Folders with their
+-- books (Spines) keep only the matching ones and go when none are left.
+local function onDeviceFilter(source, items)
+    local show = type(source) == "table" and source.show or nil
+    if (show ~= "on_device" and show ~= "not_on_device") or type(items) ~= "table" then return items end
+    local set = O.onDeviceIdSet and O.onDeviceIdSet() or {}
+    local want = show == "on_device"
+    local function match(rec) return (set[tonumber(rec.bookorbit_id) or -1] == true) == want end
+    local out = {}
+    for i = 1, #items do
+        local rec = items[i]
+        if type(rec) == "table" and rec.is_folder then
+            if type(rec.books) == "table" then
+                local kept = {}
+                for j, b in ipairs(rec.books) do
+                    if type(b) == "table" and match(b) then kept[#kept + 1] = b end
+                end
+                if #kept > 0 then
+                    local copy = {}
+                    for k, v in pairs(rec) do copy[k] = v end
+                    copy.books = kept
+                    out[#out + 1] = copy
+                end
+            else
+                out[#out + 1] = rec
+            end
+        elseif type(rec) == "table" and match(rec) then
+            out[#out + 1] = rec
+        end
+    end
+    return out
+end
+
+local function keep(source, drill, items, offset, limit)
+    items = onDeviceFilter(source, items)
+    if O.Bulk and type(items) == "table" then
+        pcall(O.Bulk.remember, source, drill, items)
+    end
+    return slice(items, offset, limit)
+end
+
 local function fetchBoCollections()
     local client = boApiClient()
     if not client then return nil end
@@ -515,7 +558,7 @@ local function buildSpec()
                 return {}, 0
             end
             if drill and drill.group == "search" then
-                return slice(searchBookOrbit(drill.key), offset, limit)
+                return keep(source, drill, searchBookOrbit(drill.key), offset, limit)
             end
             -- a spine shelf asks for the whole level at once (offset 0, a huge limit)
             local whole = (tonumber(offset) or 0) == 0 and (tonumber(limit) or 0) >= 10000
@@ -523,7 +566,7 @@ local function buildSpec()
                 and source.group_by or nil
             if drill and (drill.group == "series" or drill.group == "authors" or drill.group == "genres") then
                 local items = booksInGroup(drill.group, drill.key, group_by and modeParams(source) or nil)
-                return slice(items, offset, limit)
+                return keep(source, drill, items, offset, limit)
             end
             if group_by then
                 local folders = groupFolders(group_by, modeParams(source), whole)
@@ -531,7 +574,7 @@ local function buildSpec()
                     Genres.listen()
                     Genres.offer()
                 end
-                return slice(folders, offset, limit)
+                return keep(source, drill, folders, offset, limit)
             end
             if mode == "series" or mode == "authors" or mode == "genres" then
                 local folders = groupFolders(mode, nil, whole)
@@ -540,10 +583,10 @@ local function buildSpec()
                     Genres.listen()
                     Genres.offer()
                 end
-                return slice(folders, offset, limit)
+                return keep(source, drill, folders, offset, limit)
             end
             local items = fetchBoPage(modeParams(source), false) or {}
-            return slice(items, offset, limit)
+            return keep(source, drill, items, offset, limit)
         end,
 
         open_folder = function(folder)
@@ -569,7 +612,7 @@ local function buildSpec()
             end
             local live = liveBookPath(book.bookorbit_id)
             if live then return live end
-            showNotOnDevice(book)
+            showNotOnDevice(book, ctx)
             return true
         end,
 
@@ -581,7 +624,7 @@ local function buildSpec()
                 if ctx and type(ctx.open) == "function" then ctx.open(live) end
                 return true
             end
-            showNotOnDevice(book)
+            showNotOnDevice(book, ctx)
             return true
         end,
 
@@ -714,6 +757,39 @@ local function buildSpec()
                                 opt("series", _("Series")),
                                 opt("authors", _("Authors")),
                                 opt("genres", _("Genres")),
+                                {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
+                            },
+                        }
+                        UIManager:show(dialog)
+                    end,
+                }},
+                -- Show: every book, only the ones on the device, or only the ones not on it
+                {{
+                    text = function(d)
+                        local src = type(d.source) == "table" and d.source or {}
+                        local names = { on_device = _("On Device"), not_on_device = _("Not On Device") }
+                        return T(_("Show: %1"), names[src.show or ""] or _("All Books"))
+                    end,
+                    callback = function(d, done_row)
+                        local ButtonDialog = require("ui/widget/buttondialog")
+                        local dialog
+                        local function opt(value, label)
+                            return {{
+                                text = label,
+                                callback = function()
+                                    UIManager:close(dialog)
+                                    d.source = d.source or {}
+                                    d.source.show = value
+                                    done_row()
+                                end,
+                            }}
+                        end
+                        dialog = ButtonDialog:new{
+                            title = _("Show on this shelf"),
+                            buttons = {
+                                opt(nil, _("All Books")),
+                                opt("on_device", _("On Device")),
+                                opt("not_on_device", _("Not On Device")),
                                 {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
                             },
                         }
@@ -964,6 +1040,7 @@ local function hookReturnShelf()
 end
 
 O.shelfList = shelfList
+O.autoShelfName = autoName
 O.shelfLabel = shelfLabel
 O.hookReturnShelf = hookReturnShelf
 

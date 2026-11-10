@@ -162,7 +162,8 @@ local function deserialize(data)
 end
 
 -- run child_fn() in a worker; done(result) gets its table back (nil on failure, sleep
--- or after max_s seconds). Without fork support it runs inline on the next tick.
+-- or after max_s seconds). on_poll(waited), if given, runs at each check while the
+-- worker is busy (a download's progress), on the checks that already happen. Without fork support it runs inline on the next tick.
 -- Our own worker only needs KOReader's fork helpers. (1.5.10-1.2.2 also required
 -- BookOrbit's background_requests flag, which BookOrbit leaves off unless asked, so
 -- every lookup ran on the screen's own thread: that was the frozen screen.)
@@ -173,7 +174,7 @@ local function canFork()
         and type(util.writeToFD) == "function"
 end
 
-local function runWorker(client, child_fn, done, max_s)
+local function runWorker(client, child_fn, done, max_s, on_poll)
     local util = require("ffi/util")
     if not canFork() then
         O.problem("nofork", "background worker not available on this device: lookups run one book at a time on the screen's thread")
@@ -210,6 +211,7 @@ local function runWorker(client, child_fn, done, max_s)
             done(deserialize(data))
             return
         end
+        if on_poll then pcall(on_poll, waited) end
         -- every 0.5 s for the first 2 s (most jobs are done by then), then every second
         local step_s = waited < 2 and 0.5 or 1
         waited = waited + step_s

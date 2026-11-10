@@ -326,6 +326,23 @@ local function menuItems()
             },
         },
     }
+    items[#items + 1] = {
+        text = _("Extras"),
+        sub_item_table = {
+            toggle("bulk_download", _("Bulk Download"),
+                _("Hold a book that isn't on the device (or the hero): Bulk Download… lists that shelf's books that aren't on the device, with the one you held ticked. Tick more (Select… for All, Same Series, Same Author or None) and tap Download. It checks the size and free space first, then downloads one at a time; hold a book again to stop. Sleep pauses it and waking asks whether to continue."),
+                nil),
+            toggle("bulk_remove", _("Bulk Remove"),
+                _("Hold a BookOrbit book that's on the device (or the hero): Bulk Remove… lists that shelf's books on the device. Tick the ones to remove and confirm. They stay in BookOrbit."),
+                nil),
+            toggle("read_status", _("Reading Status"),
+                _("Hold a BookOrbit book: Reading Status… sets it in BookOrbit (Want To Read, Reading, On Hold, Read, Abandoned, Unread), for books you read somewhere else. Needs Wi-Fi."),
+                nil),
+            toggle("next_in_series", _("Next In Series"),
+                _("Finish a BookOrbit book: if the next one in its series isn't on the device, you're asked once you're back on the home screen whether to download it. Nothing pops up inside the book."),
+                nil),
+        },
+    }
     items[#items + 1] = offlineMenu()
     items[#items + 1] = {
         text = _("Hero"),
