@@ -1,5 +1,6 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
--- Reading Status and Next In Series (settings, both off by default).
+-- Reading Status, Next In Series and the Not On Device mark (settings, all off by
+-- default).
 local O = require("orbitshelf_core")
 local T, TAG, UIManager, _, cfg, logger = O.T, O.TAG, O.UIManager, O._, O.cfg, O.logger
 
@@ -200,6 +201,222 @@ hookShow = function()
             UIManager:nextTick(function() pcall(Extras.offerNext) end)
         end
         return r
+    end
+end
+
+-- ---- Not On Device mark (1.2.25) -------------------------------------------------
+-- BookOrbit's download mark (the Side Panel's) on the bottom-left of a BookOrbit
+-- cover whose book isn't on the device; nothing on books that are. Bottom-left
+-- because the page count sits bottom-right. Covers grid only (Bookshelf's own
+-- badges have the same rule), drawn into the card Bookshelf builds, so it follows
+-- the cover and its redraws; Bookshelf's Cover badge size scales it. Mark Style
+-- (1.2.26): Auto (black or white by the cover, the default) or Badge.
+
+local mark_file -- path of BookOrbit's download icon, false when missing
+local function markFile()
+    if mark_file ~= nil then return mark_file end
+    mark_file = false
+    local lfs = require("libs/libkoreader-lfs")
+    for _i, p in ipairs({ "plugins/bookorbit.koplugin/assets/bookorbit.download.svg",
+                          "plugins/bookorbit.koplugin/bookorbit.download.svg" }) do
+        if lfs.attributes(p, "mode") == "file" then mark_file = p break end
+    end
+    if not mark_file then logger.warn(TAG, "Not On Device mark: BookOrbit's download icon not found") end
+    return mark_file
+end
+
+-- Which BookOrbit book a cover is. A book that isn't on the device has the
+-- address bookorbit://<id> instead of a file (Bookshelf keeps that even when it
+-- rebuilds the record and drops OrbitShelf's own fields); the id field when it
+-- survived.
+local function boIdOf(book)
+    local fp = book.filepath
+    local id = type(fp) == "string" and tonumber(fp:match("^bookorbit://(%d+)$"))
+    if id then return id, true end
+    if book.is_bookorbit or book.source_kind == O.SOURCE_ID then
+        return tonumber(book.bookorbit_id), false
+    end
+    return nil
+end
+
+-- With OrbitShelf's Diagnostics on: the first covers it decides on, to see why a
+-- mark does or doesn't show.
+local mark_logged = 0
+local function markTrace(sw, book, id, remote, want)
+    local d = O.diag
+    if not (cfg.diagnostics and type(d) == "table" and type(d.log) == "function") or mark_logged >= 12 then return end
+    mark_logged = mark_logged + 1
+    pcall(d.log, "Not On Device mark: %q id=%s remote=%s is_bookorbit=%s show_progress=%s -> %s",
+        tostring(book.title or "?"), tostring(id), tostring(remote), tostring(book.is_bookorbit),
+        tostring(sw.show_progress), want and "mark" or "no mark")
+end
+
+-- The icon as a coverage mask (8-bit, ink = high), one per size, so it can be drawn
+-- in any colour. Built once from BookOrbit's SVG.
+local masks = {}
+local function maskFor(size)
+    local m = masks[size]
+    if m ~= nil then return m or nil end
+    masks[size] = false
+    local ok = pcall(function()
+        local Blitbuffer = require("ffi/blitbuffer")
+        local IconWidget = require("ui/widget/iconwidget")
+        local bb = Blitbuffer.new(size, size, Blitbuffer.TYPE_BB8)
+        bb:fill(Blitbuffer.COLOR_WHITE)
+        local icon = IconWidget:new{ file = mark_file, width = size, height = size }
+        icon:paintTo(bb, 0, 0)
+        if icon.free then icon:free() end
+        bb:invertRect(0, 0, size, size)
+        masks[size] = bb
+    end)
+    if not ok then masks[size] = false end
+    return masks[size] or nil
+end
+
+local function blitInk(bb, mask, x, y, size, color)
+    local okF, ffi = pcall(require, "ffi")
+    local okT, RGB32 = false, nil
+    if okF and ffi then okT, RGB32 = pcall(ffi.typeof, "ColorRGB32") end
+    if okT and RGB32 and ffi.istype(RGB32, color) and bb.colorblitFromRGB32 then
+        bb:colorblitFromRGB32(mask, x, y, 0, 0, size, size, color)
+    else
+        bb:colorblitFrom(mask, x, y, 0, 0, size, size, color)
+    end
+end
+
+-- How light the cover is under the mark, 0-255, from a 4 x 4 sample of what's
+-- already drawn there (the buffer as stored: night mode inverts the cover and the
+-- mark together, so the contrast holds either way).
+local function lightnessUnder(bb, x, y, size)
+    local okC, ClipBB = pcall(require, "lib/bookshelf_clip_bb")
+    local real = (okC and type(ClipBB.real) == "function") and ClipBB.real(bb) or bb
+    local sum, n = 0, 0
+    for i = 0, 3 do
+        for j = 0, 3 do
+            local ok, c = pcall(real.getPixel, real, x + math.floor((i + 0.5) * size / 4),
+                y + math.floor((j + 0.5) * size / 4))
+            if ok and c then
+                local okv, v = pcall(function() return c:getColor8().a end)
+                if okv and v then sum, n = sum + v, n + 1 end
+            end
+        end
+    end
+    return n > 0 and sum / n or 255
+end
+
+-- The mark itself. Auto: black on a light corner, white on a dark one, with a thin
+-- outline in the other colour so it reads on a busy corner too. Badge: on a small
+-- round disc in Bookshelf's badge colours (like its page-count pill).
+local Mark
+local function newMark(size)
+    if not Mark then
+        local Widget = require("ui/widget/widget")
+        local Geom = require("ui/geometry")
+        Mark = Widget:extend{}
+        function Mark:getSize() return Geom:new{ w = self.size, h = self.size } end
+        function Mark:paintTo(bb, x, y)
+            self.dimen = Geom:new{ x = x, y = y, w = self.size, h = self.size }
+            pcall(function()
+                local Blitbuffer = require("ffi/blitbuffer")
+                local size = self.size
+                if cfg.mark_style == "badge" then
+                    local okp, CP = pcall(require, "lib/bookshelf_cover_progress")
+                    local colors = okp and type(CP.resolvedColors) == "function" and CP.resolvedColors() or {}
+                    local okc, Color = pcall(require, "lib/bookshelf_color")
+                    local bg = colors.badge_bg or Blitbuffer.COLOR_WHITE
+                    local fg = colors.badge_fg or Blitbuffer.COLOR_BLACK
+                    local edge = colors.border or Blitbuffer.COLOR_BLACK
+                    local r = math.floor(size / 2)
+                    if okc and Color.paintRoundedRect then
+                        Color.paintRoundedRect(bb, x, y, size, size, bg, r)
+                        Color.paintBorder(bb, x, y, size, size, 1, edge, r)
+                    else
+                        bb:paintRoundedRect(x, y, size, size, bg, r)
+                        bb:paintBorder(x, y, size, size, 1, edge, r)
+                    end
+                    local inner = math.floor(size * 0.68)
+                    local mask = maskFor(inner)
+                    if mask then
+                        local o = math.floor((size - inner) / 2)
+                        blitInk(bb, mask, x + o, y + o, inner, fg)
+                    end
+                    return
+                end
+                local mask = maskFor(size)
+                if not mask then return end
+                local dark = lightnessUnder(bb, x, y, size) < 128
+                local ink = dark and Blitbuffer.COLOR_WHITE or Blitbuffer.COLOR_BLACK
+                local halo = dark and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_WHITE
+                for dx = -1, 1 do
+                    for dy = -1, 1 do
+                        if dx ~= 0 or dy ~= 0 then blitInk(bb, mask, x + dx, y + dy, size, halo) end
+                    end
+                end
+                blitInk(bb, mask, x, y, size, ink)
+            end)
+        end
+    end
+    return Mark:new{ size = size }
+end
+
+local function wantsMark(sw)
+    local book = sw.book
+    if not (cfg.mark_not_on_device and sw.show_progress and type(book) == "table") then return false end
+    if sw.is_bulk_selected then return false end
+    local id, remote = boIdOf(book)
+    if not id then markTrace(sw, book, nil, false, false) return false end
+    local set = O.onDeviceIdSet and O.onDeviceIdSet() or {}
+    -- on the device since the list was saved: the id set says so
+    local want = not set[id]
+    markTrace(sw, book, id, remote, want)
+    return want
+end
+
+function Extras.hookNotOnDeviceMark()
+    local ok, SW = pcall(require, "lib/bookshelf_spine_widget")
+    if not ok or type(SW) ~= "table" or SW._orbitshelf_mark then return end
+    if type(SW._renderShadowedCard) ~= "function" then
+        O.remember(SW, "_renderShadowedCard") -- reports it missing
+        return
+    end
+    SW._orbitshelf_mark = true
+    O.remember(SW, "_renderShadowedCard")
+    local orig = SW._renderShadowedCard
+    SW._renderShadowedCard = function(self, ...)
+        local group, card_w, card_h = orig(self, ...)
+        local okw, want = pcall(wantsMark, self)
+        if okw and want and type(group) == "table" and card_w and card_h and markFile() then
+            pcall(function()
+                local Screen = require("device").screen
+                local FrameContainer = require("ui/widget/container/framecontainer")
+                local okp, CP = pcall(require, "lib/bookshelf_cover_progress")
+                local base = math.max(Screen:scaleBySize(14), math.floor(card_w * 0.16))
+                local size = (okp and type(CP.badgeSize) == "function") and CP.badgeSize(base) or base
+                if size > card_w * 0.45 then return end -- a tiny cover: no room
+                local inset = Screen:scaleBySize(1) + Screen:scaleBySize(3) -- card border + Bookshelf's badge margin
+                -- Bookshelf's reading bookmark / tick and its progress bar also start
+                -- bottom-left: the mark sits just above them when the book has one
+                local lift = 0
+                local oki, ind = pcall(self._statusIndicators, self)
+                if oki and type(ind) == "table" then
+                    if ind.glyph then
+                        local g = math.max(Screen:scaleBySize(9), math.floor(card_w * 0.132))
+                        g = (okp and type(CP.badgeSize) == "function") and CP.badgeSize(g) or g
+                        lift = math.floor(g * 1.4) + Screen:scaleBySize(2)
+                    elseif ind.bar then
+                        lift = Screen:scaleBySize(8) + Screen:scaleBySize(4)
+                    end
+                end
+                local y = card_h - inset - size - lift
+                if y < inset then return end
+                group[#group + 1] = FrameContainer:new{
+                    bordersize = 0, padding = 0,
+                    padding_top = y, padding_left = inset,
+                    newMark(size),
+                }
+            end)
+        end
+        return group, card_w, card_h
     end
 end
 

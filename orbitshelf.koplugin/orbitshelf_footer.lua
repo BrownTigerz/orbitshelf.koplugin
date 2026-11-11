@@ -814,7 +814,132 @@ local function hookFooterCritter()
 end
 
 
+-- ---- Home button (1.2.25) ---------------------------------------------------------
+-- A house in the footer corner opposite the close X / hamburger: back to page 1 of
+-- this shelf, or of the shelf picked under Home Goes To. Inside a folder or group it
+-- comes back out to the shelf. Already there: nothing happens (no redraw).
+
+local function homeSide(bw)
+    local pos = "left"
+    if type(bw._startMenuPosition) == "function" then
+        local ok, p = pcall(bw._startMenuPosition, bw)
+        if ok and p then pos = p end
+    end
+    -- opposite the close X / hamburger; with it off, the right corner
+    if pos == "right" then return "left" end
+    return "right"
+end
+
+local function goHome(bw)
+    if type(bw) ~= "table" then return end
+    local target = cfg.home_target
+    if target and target ~= bw.chip then
+        local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
+        if ok and type(TabModel.getById) == "function" and TabModel.getById(target)
+                and type(bw._setActiveChip) == "function" then
+            bw:_setActiveChip(target)
+            return
+        end
+        -- that shelf is gone: this shelf's page 1 instead
+    end
+    if type(bw._drilldown_path) == "table" and #bw._drilldown_path > 0 then
+        if type(bw._selectChip) == "function" then bw:_selectChip(bw.chip) end
+        return
+    end
+    if (tonumber(bw._cursor) or 1) > 1 then
+        if type(bw._clearDpadFocus) == "function" then pcall(bw._clearDpadFocus, bw) end
+        bw._tap_selected_fp = nil
+        bw._cursor = 1
+        if type(bw._syncPageFromCursor) == "function" then bw:_syncPageFromCursor() end
+        if type(bw._swapShelvesInPlace) == "function" then
+            bw:_swapShelvesInPlace()
+        elseif type(bw._rebuild) == "function" then
+            bw:_rebuild()
+        end
+    end
+end
+
+local function buildHomeIcon(bw, frame_width)
+    local Screen = require("device").screen
+    local Geom = require("ui/geometry")
+    local Widget = require("ui/widget/widget")
+    local Color = require("lib/bookshelf_color")
+    local art = Screen:scaleBySize(32)
+    frame_width = frame_width or art
+    local stroke = (bw.FOOTER_STROKE_W) or math.max(1, math.floor(art / 14))
+    local span = math.floor(art * 0.62)
+    local ink = bw:_chromeInk()
+    local HomeWidget = Widget:extend{}
+    function HomeWidget:getSize() return Geom:new{ w = art, h = art } end
+    function HomeWidget:paintTo(bb, x, y)
+        self.dimen = Geom:new{ x = x, y = y, w = art, h = art }
+        local ox = x + math.floor((art - span) / 2)
+        local oy = y + math.floor((art - span) / 2)
+        local roof_h = math.floor(span / 2)
+        local half = math.floor(span / 2)
+        -- roof: two slopes from the peak to the eaves, in stroke-sized steps
+        for t = 0, roof_h - stroke do
+            local dx = math.floor(t * half / roof_h)
+            Color.paintRect(bb, ox + half - dx, oy + t, stroke, stroke, ink)
+            Color.paintRect(bb, ox + half + dx - stroke + 1, oy + t, stroke, stroke, ink)
+        end
+        -- walls: an outline under the eaves
+        local inset = math.floor(span * 0.16)
+        local bx, bw_, by = ox + inset, span - 2 * inset, oy + roof_h - stroke
+        local bh = span - roof_h + stroke
+        Color.paintRect(bb, bx, by, stroke, bh, ink)
+        Color.paintRect(bb, bx + bw_ - stroke, by, stroke, bh, ink)
+        Color.paintRect(bb, bx, by + bh - stroke, bw_, stroke, ink)
+        -- door
+        local dw = math.max(stroke * 2, math.floor(bw_ * 0.3))
+        local dh = math.floor(bh * 0.55)
+        Color.paintRect(bb, bx + math.floor((bw_ - dw) / 2), by + bh - dh, dw, dh, ink)
+    end
+    return bw:_wrapAsFooterButton(HomeWidget:new{}, frame_width, false, function()
+        local ok, err = pcall(goHome, bw)
+        if not ok then logger.warn(TAG, "Home button:", err) end
+        return true
+    end)
+end
+
+local function hookHomeButton()
+    local okW, BW = pcall(require, "lib/bookshelf_widget")
+    if not okW or type(BW) ~= "table" or BW._orbitshelf_home then return end
+    if type(BW._buildFooterRow) ~= "function" then
+        O.remember(BW, "_buildFooterRow") -- reports it missing
+        return
+    end
+    BW._orbitshelf_home = true
+    O.remember(BW, "_buildFooterRow")
+    local orig = BW._buildFooterRow
+    BW._buildFooterRow = function(self, content_w, total_pages, footer_h, ...)
+        local row = orig(self, content_w, total_pages, footer_h, ...)
+        if not cfg.home_button or type(row) ~= "table" then return row end
+        pcall(function()
+            -- not while selecting (that corner is the bucket), not with the bar hidden
+            if self._selection and self._selection:isActive() then return end
+            if #row == 0 then return end
+            -- Bookshelf's full-screen grid button already owns that corner
+            local okS, BS = pcall(require, "lib/bookshelf_settings_store")
+            if okS and type(BS.microFullscreenButton) == "function" and BS.microFullscreenButton() then return end
+            local Geom = require("ui/geometry")
+            local LeftContainer = require("ui/widget/container/leftcontainer")
+            local RightContainer = require("ui/widget/container/rightcontainer")
+            local h = (row.dimen and row.dimen.h) or footer_h
+            local side_w = math.floor((self.width - math.floor(content_w * 0.75)) / 2)
+            local icon = buildHomeIcon(self, side_w)
+            local Container = homeSide(self) == "right" and RightContainer or LeftContainer
+            row[#row + 1] = Container:new{
+                dimen = Geom:new{ w = self.width, h = h },
+                icon,
+            }
+        end)
+        return row
+    end
+end
+
 -- shared with the other files
+O.hookHomeButton = hookHomeButton
 O.hookCloseOnlyMenu = hookCloseOnlyMenu
 O.hookFooterCritter = hookFooterCritter
 O.resetPick = resetPick

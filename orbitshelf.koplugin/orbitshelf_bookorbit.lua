@@ -110,8 +110,14 @@ end
 local removed_ids = {}
 
 -- Book ids on the device, from BookOrbit's map and the Side Panel's own downloads (no
--- file checks: the shelf filter runs over whole lists)
+-- file checks: the shelf filter runs over whole lists). Kept for 2 s, so a page of
+-- covers asking one by one (Not On Device mark) builds it once; a download or a
+-- removal drops it at once.
+local id_set_cache, id_set_at
+local function onDeviceIdSetChanged() id_set_cache = nil end
 local function onDeviceIdSet()
+    local now = os.time()
+    if id_set_cache and id_set_at and now >= id_set_at and now - id_set_at < 2 then return id_set_cache end
     local set = {}
     for id in pairs(onDeviceByBookId(false)) do
         local n = tonumber(id)
@@ -124,6 +130,7 @@ local function onDeviceIdSet()
             if n and type(fp) == "string" and not removed_ids[n] then set[n] = true end
         end
     end
+    id_set_cache, id_set_at = set, now
     return set
 end
 
@@ -806,6 +813,7 @@ end
 
 local function rememberLocalDownload(book_id, path)
     if tonumber(book_id) then removed_ids[tonumber(book_id)] = nil end
+    onDeviceIdSetChanged()
     if not G_reader_settings or not book_id or not path then return end
     local mine = G_reader_settings:readSetting("simpleui_sidepanel_bo_local")
     if type(mine) ~= "table" then mine = {} end
@@ -1133,6 +1141,7 @@ local function deleteBookFiles(book, path)
     local gone = lfs.attributes(path, "mode") ~= "file"
     if gone and tonumber(book.bookorbit_id) then
         removed_ids[tonumber(book.bookorbit_id)] = true
+        onDeviceIdSetChanged()
         pcall(function()
             local SM = require("bookorbit_state_manager")
             if type(SM.invalidate) == "function" then SM.invalidate() end
@@ -1519,6 +1528,7 @@ O.forgetDownloading = forgetDownloading
 O.deleteBookFiles = deleteBookFiles
 O.devicePathOf = devicePathOf
 O.onDeviceIdSet = onDeviceIdSet
+O.onDeviceIdSetChanged = onDeviceIdSetChanged
 O.recordFromBo = recordFromBo
 O.registerFileDialogButton = registerFileDialogButton
 O.removeFromDevice = removeFromDevice

@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.24
+Version: 1.2.26
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.24:". At start it writes the
+Problems go to crash.log, tagged "orbitshelf 1.2.26:". At start it writes the
 KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
 patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -80,12 +80,35 @@ Files: main.lua (start-up, menu, Wi-Fi and sleep), orbitshelf_core.lua (settings
 crash.log), orbitshelf_bookorbit.lua (BookOrbit lists, covers, offline details,
 download / remove), orbitshelf_genres.lua (background lookups), orbitshelf_source.lua
 (the Bookshelf source and its shelves), orbitshelf_hero.lua (hero buttons, flash),
-orbitshelf_footer.lua (critter, close X), orbitshelf_menu.lua (settings menu),
+orbitshelf_footer.lua (critter, close X, Home button), orbitshelf_menu.lua (settings menu),
 orbitshelf_collections.lua (Add To Collection), orbitshelf_bulk.lua (Bulk Download / Remove),
-orbitshelf_extras.lua (Reading Status, Next In Series),
+orbitshelf_extras.lua (Reading Status, Next In Series, Not On Device mark),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  1.2.26 2026-11-11  Shelf > Mark Style for the Not On Device mark: Auto (the default)
+                     draws it black on a light cover corner and white on a dark one, with
+                     a thin outline in the other colour so it reads on a busy corner too;
+                     Badge puts it on a small round disc in Bookshelf's badge colours, like
+                     its page-count pill. Night mode keeps the contrast either way.
+  1.2.25 2026-11-11  Two new options, both off by default:
+                     Shelf > Mark Books Not On Device: BookOrbit's download mark (the Side
+                     Panel's) on the bottom-left of a BookOrbit cover whose book isn't on
+                     the device; books on the device stay as they are. The page count
+                     keeps the bottom-right. Covers view only; it follows Bookshelf's Cover
+                     badge size. A book with Bookshelf's reading mark or progress bar
+                     (they start bottom-left too) gets it just above them. A download or a
+                     removal shows on the next redraw. A book is known by its bookorbit://
+                     address, which Bookshelf keeps when it rebuilds the record; turning the
+                     option on or off redraws every cover (Bookshelf's kept pages are
+                     dropped). With Diagnostics on, the first covers it decides on are
+                     logged.
+                     Footer > Home Button: a house in the footer corner opposite the close
+                     X / hamburger, back to page 1. Home Goes To: This Shelf (page 1 of
+                     whichever shelf you're on) or a shelf you pick (always its page 1).
+                     Inside a folder or group it comes back out to the shelf; already there,
+                     nothing redraws. Not shown while selecting books, or when Bookshelf's
+                     full-screen grid button has that corner.
   1.2.24 2026-11-10  New Extras menu, every option off by default:
                      Bulk Download: hold a book that isn't on the device (or the hero),
                      Bulk Download… lists that shelf's books not on the device, the held
@@ -335,6 +358,8 @@ local function boot()
     step("Remove From Device button", O.registerFileDialogButton)
     step("close-only menu", O.hookCloseOnlyMenu)
     step("footer critter", O.hookFooterCritter)
+    if cfg.home_button then step("Home button", O.hookHomeButton) end
+    if cfg.mark_not_on_device then step("Not On Device mark", O.Extras.hookNotOnDeviceMark) end
     step("rewrite stock chips", O.applyAutoRewrite)
     O.arm()
     if cfg.diagnostics then step("diagnostics", O.startDiag) end

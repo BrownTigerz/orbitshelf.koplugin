@@ -869,6 +869,7 @@ write("orbitshelf diagnostics ready")
 
 -- turned on again from the menu in the same session: a fresh 30 minutes
 O.diag = {
+    log = log, -- other files' lines (Not On Device mark)
     restart = function()
         started, active, expired = os.time(), true, false
         write("==== orbitshelf diagnostics turned on: logging for " .. WINDOW_MIN .. " minutes ====")

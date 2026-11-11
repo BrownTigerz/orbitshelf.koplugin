@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "1.2.24"
+local VERSION = "1.2.26"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -60,6 +60,10 @@ local DEFAULTS = {
     diagnostics = false,           -- write what OrbitShelf does to crash.log
     search_bookorbit = false,      -- Bookshelf's search looks in BookOrbit instead of the device
     offline_update = "wifi",       -- Offline Library checks for new books: "wifi" | "refresh" | "both" | "manual"
+    mark_not_on_device = false,    -- download mark, bottom-left, on BookOrbit covers not on the device
+    mark_style = "auto",           -- the mark: "auto" (black or white by the cover) | "badge" (on a round disc)
+    home_button = false,           -- footer: Home button opposite the close X / hamburger
+    home_target = false,           -- Home goes to: false = page 1 of this shelf; a shelf id = that shelf's page 1
 }
 
 -- What the patch (up to 1.6.1) had on by default. Someone who used the patch but never
@@ -245,6 +249,7 @@ local HOOK_LABELS = {
     _swapHeroInPlace = "hero flash", _pageTurnFlashDue = "shelf flash",
     _searchAndDrill = "BookOrbit search", show = "Return To shelf",
     _showBookDetail = "Flash: Bookshelf book menu", editTab = "Flash: shelf editor",
+    _buildFooterRow = "Home button", _renderShadowedCard = "Not On Device mark",
 }
 local remembered, armed = {}, {}
 

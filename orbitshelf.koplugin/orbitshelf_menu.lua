@@ -423,6 +423,41 @@ local function menuItems()
             toggle("search_bookorbit", _("Search BookOrbit"),
                 _("Bookshelf's search looks in your BookOrbit library instead of the books on the device. Results open like a folder; back returns to where you were. With Wi-Fi off it searches the saved library list (title, author, series, genres). Off by default."),
                 nil),
+            toggle("mark_not_on_device", _("Mark Books Not On Device"),
+                _("BookOrbit's download mark (the same one as in the Side Panel) on the bottom-left of a BookOrbit cover whose book isn't on the device, so you can see at a glance what's still to download. Books on the device stay as they are. The page count keeps the bottom-right. Covers view only. Off by default."),
+                function()
+                    O.Extras.hookNotOnDeviceMark()
+                    -- Bookshelf keeps built pages for quick turns back; drop them so
+                    -- every cover is drawn again with (or without) the mark
+                    local bs = getBookshelf()
+                    if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
+                    rebuildShelf()
+                end),
+            {
+                text_func = function()
+                    return T(_("Mark Style: %1"), cfg.mark_style == "badge" and _("Badge") or _("Auto Black / White"))
+                end,
+                help_text = _("How the Not On Device mark looks. Auto Black / White: black on a light cover, white on a dark one, with a thin outline so it reads on a busy corner. Badge: on a small round disc in Bookshelf's badge colours, like the page count. Auto by default."),
+                enabled_func = function() return cfg.mark_not_on_device end,
+                sub_item_table_func = function()
+                    local function opt(value, label)
+                        return {
+                            text = label,
+                            radio = true,
+                            keep_menu_open = true,
+                            checked_func = function() return (cfg.mark_style or "auto") == value end,
+                            callback = function()
+                                cfg.mark_style = value
+                                saveConfig()
+                                local bs = getBookshelf()
+                                if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
+                                rebuildShelf()
+                            end,
+                        }
+                    end
+                    return { opt("auto", _("Auto Black / White")), opt("badge", _("Badge")) }
+                end,
+            },
         },
     }
     items[#items + 1] = {
@@ -524,6 +559,51 @@ local function menuItems()
                     end
                     return t
                 end)(),
+                separator = true,
+            },
+            toggle("home_button", _("Home Button"),
+                _("A house in the footer corner opposite the close X / hamburger. One tap goes back to page 1 (see Home Goes To); inside a folder or group it comes back out to the shelf. Handy after paging deep into a big library. Not shown while selecting books, or when Bookshelf's full-screen grid button already has that corner. Off by default."),
+                function() O.hookHomeButton() rebuildShelf() end),
+            {
+                text_func = function()
+                    local name = _("This Shelf")
+                    if cfg.home_target then
+                        local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
+                        local tab = ok and TabModel.getById(cfg.home_target)
+                        name = tab and tostring(tab.label or tab.id) or _("This Shelf")
+                    end
+                    return T(_("Home Goes To: %1"), name)
+                end,
+                enabled_func = function() return cfg.home_button end,
+                help_text = _("This Shelf: page 1 of whichever shelf you're on. Or pick a shelf: Home always goes to page 1 of that one. If the picked shelf is deleted, Home goes to page 1 of the shelf you're on."),
+                sub_item_table_func = function()
+                    local t = {
+                        {
+                            text = _("This Shelf"),
+                            radio = true,
+                            keep_menu_open = true,
+                            checked_func = function() return not cfg.home_target end,
+                            callback = function() cfg.home_target = false saveConfig() end,
+                            separator = true,
+                        },
+                    }
+                    local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
+                    local tabs = ok and type(TabModel.getActive) == "function" and TabModel.getActive() or {}
+                    for _i, tab in ipairs(tabs) do
+                        local id = tab.id
+                        t[#t + 1] = {
+                            text = tostring(tab.label or id),
+                            radio = true,
+                            keep_menu_open = true,
+                            checked_func = function() return cfg.home_target == id end,
+                            callback = function() cfg.home_target = id saveConfig() end,
+                        }
+                    end
+                    if #tabs == 0 then
+                        t[#t + 1] = { text = _("Open Bookshelf once to list its shelves"), enabled_func = function() return false end }
+                    end
+                    return t
+                end,
             },
         },
         separator = true,
