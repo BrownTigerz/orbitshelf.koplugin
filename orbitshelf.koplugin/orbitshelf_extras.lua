@@ -35,7 +35,12 @@ local function statusLabel(id, fallback)
     return type(l) == "string" and l ~= "" and l or fallback
 end
 
-local function setStatus(id, status, label)
+local function setStatus(id, status, label, title)
+    -- 1.3.1: Wi-Fi off, it waits in the Queue (the cover changes now)
+    if O.Queue and not O.isWifiOn() then
+        O.Queue.addStatus(id, status, label, title)
+        return
+    end
     local client = O.boApiClient()
     if not client or type(O.runWorker) ~= "function" then
         UIManager:show(require("ui/widget/infomessage"):new{ text = _("BookOrbit is not signed in") })
@@ -47,10 +52,13 @@ local function setStatus(id, status, label)
             return { ok = body ~= nil and body ~= false, err = err and tostring(err) or nil }
         end, function(res)
             if type(res) == "table" and res.ok then
+                -- an older queued status for it is now out of date
+                if O.Queue then pcall(O.Queue.removeStatus, id) end
                 pcall(function()
                     local SM = require("bookorbit_state_manager")
                     if type(SM.invalidate) == "function" then SM.invalidate() end
                 end)
+                if O.noteReadStatus then pcall(O.noteReadStatus, id, status) end
                 O.Genres.note(T(_("Marked %1"), label))
             else
                 logger.warn(TAG, "reading status failed:", type(res) == "table" and res.err or "no answer")
@@ -66,11 +74,20 @@ local function pickStatus(id, title)
     local ButtonDialog = require("ui/widget/buttondialog")
     local dlg
     local rows = {}
-    for i, s in ipairs(STATUSES) do
+    -- 2.0.1: a status waiting for Wi-Fi can be dropped here (the covers go back)
+    local queued = O.Queue and O.Queue.statusEntry and O.Queue.statusEntry(id)
+    if queued then
+        rows[#rows + 1] = {{ text = T(_("Don't Send %1 (Waiting For Wi-Fi)"), tostring(queued.label or queued.status)),
+            callback = function()
+                UIManager:close(dlg)
+                O.Queue.removeStatus(id, true)
+            end }}
+    end
+    for _i, s in ipairs(STATUSES) do
         local label = statusLabel(s[1], s[2])
         rows[#rows + 1] = {{ text = label, callback = function()
             UIManager:close(dlg)
-            setStatus(id, s[1], label)
+            setStatus(id, s[1], label, title)
         end }}
     end
     rows[#rows + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }}
@@ -78,14 +95,40 @@ local function pickStatus(id, title)
     UIManager:show(dlg)
 end
 
+-- the Book Page's Reading Status button (1.3.3)
+O.pickReadStatus = pickStatus
+
 -- the row for a hold menu (any BookOrbit book), or nil
 function O.readStatusRow(book, close)
-    if not cfg.read_status or type(book) ~= "table" or book.is_folder then return nil end
+    if type(book) ~= "table" or book.is_folder then return nil end
     local id = tonumber(book.bookorbit_id) or tonumber(O.bookIdForPath(book.filepath))
     if not id then return nil end
     return { text = _("Reading Status…"), callback = function()
         if close then close() end
         pickStatus(id, book.display_title or book.title)
+    end }
+end
+
+-- 1.3.8: the More… row of the quick menu and the hero's hold menu: Add To Collection,
+-- Reading Status… and Bulk Download / Remove… in a small menu of their own
+function O.moreRow(book, widget, close)
+    if type(book) ~= "table" or book.is_folder then return nil end
+    return { text = _("More…"), callback = function()
+        if close then close() end
+        local ButtonDialog = require("ui/widget/buttondialog")
+        local dlg
+        local function shut() if dlg then UIManager:close(dlg) end end
+        local rows = {}
+        if O.canAddToCollection and O.canAddToCollection(book) then
+            rows[#rows + 1] = {{ text = _("Add To Collection"), callback = function() shut() O.addToCollection(book) end }}
+        end
+        local status = O.readStatusRow(book, shut)
+        if status then rows[#rows + 1] = { status } end
+        local bulk = O.Bulk and (O.Bulk.row(book, widget, shut) or O.Bulk.removeRow(book, widget, shut))
+        if bulk then rows[#rows + 1] = { bulk } end
+        rows[#rows + 1] = {{ text = _("Cancel"), callback = shut }}
+        dlg = ButtonDialog:new{ title = tostring(book.display_title or book.title or ""), buttons = rows }
+        UIManager:show(dlg)
     end }
 end
 
@@ -135,6 +178,15 @@ function Extras.endOfBook(ui)
     if not (series and index) then return end
     local nxt = nextInSeries(series, index, id)
     if not nxt or O.liveBookPath(nxt.bookorbit_id) then return end
+    -- 1.3.8: Next Book In Series: Add To Queue: no question, it waits in the Queue
+    -- (runs now if Wi-Fi is on, else on the next connect)
+    if cfg.next_series_mode == "queue" and O.Queue then
+        if not O.Queue.has(nxt) then
+            O.Queue.addDownload(nxt)
+            if O.isWifiOn() then UIManager:scheduleIn(2, function() O.Queue.run(false) end) end
+        end
+        return
+    end
     pending = { rec = nxt, finished = (rec and rec.title) or props.display_title or props.title or "" }
     hookShow()
 end
@@ -176,7 +228,7 @@ function Extras.offerNext()
         cancel_text = _("Not Now"),
         ok_callback = function()
             dialog = nil
-            O.downloadBookOrbitBook(p.rec)
+            if O.Queue then O.Queue.downloadOrQueue(p.rec) else O.downloadBookOrbitBook(p.rec) end
         end,
         cancel_callback = function() dialog = nil end,
     }
@@ -248,12 +300,35 @@ local function markTrace(sw, book, id, remote, want)
     mark_logged = mark_logged + 1
     pcall(d.log, "Not On Device mark: %q id=%s remote=%s is_bookorbit=%s show_progress=%s -> %s",
         tostring(book.title or "?"), tostring(id), tostring(remote), tostring(book.is_bookorbit),
-        tostring(sw.show_progress), want and "mark" or "no mark")
+        tostring(sw.show_progress), want == "clock" and "clock" or (want and "mark" or "no mark"))
 end
 
 -- The icon as a coverage mask (8-bit, ink = high), one per size, so it can be drawn
 -- in any colour. Built once from BookOrbit's SVG.
 local masks = {}
+local clock_masks = {}
+-- 1.3.1: the Queue's clock, drawn (no icon file needed): a ring and two hands
+local function clockMaskFor(size)
+    local m = clock_masks[size]
+    if m ~= nil then return m or nil end
+    clock_masks[size] = false
+    pcall(function()
+        local Blitbuffer = require("ffi/blitbuffer")
+        local bb = Blitbuffer.new(size, size, Blitbuffer.TYPE_BB8)
+        bb:fill(Blitbuffer.COLOR_WHITE)
+        local c = math.floor(size / 2)
+        local r = math.floor(size / 2) - 1
+        local w = math.max(1, math.floor(size / 9))
+        bb:paintCircle(c, c, r, Blitbuffer.COLOR_BLACK, w)
+        local hw = math.max(1, math.floor(size / 10))
+        -- hands: 12 o'clock and 3 o'clock
+        bb:paintRect(c - math.floor(hw / 2), c - math.floor(r * 0.65), hw, math.floor(r * 0.65) + 1, Blitbuffer.COLOR_BLACK)
+        bb:paintRect(c, c - math.floor(hw / 2), math.floor(r * 0.5), hw, Blitbuffer.COLOR_BLACK)
+        bb:invertRect(0, 0, size, size)
+        clock_masks[size] = bb
+    end)
+    return clock_masks[size] or nil
+end
 local function maskFor(size)
     local m = masks[size]
     if m ~= nil then return m or nil end
@@ -308,7 +383,7 @@ end
 -- outline in the other colour so it reads on a busy corner too. Badge: on a small
 -- round disc in Bookshelf's badge colours (like its page-count pill).
 local Mark
-local function newMark(size)
+local function newMark(size, clock)
     if not Mark then
         local Widget = require("ui/widget/widget")
         local Geom = require("ui/geometry")
@@ -335,14 +410,14 @@ local function newMark(size)
                         bb:paintBorder(x, y, size, size, 1, edge, r)
                     end
                     local inner = math.floor(size * 0.68)
-                    local mask = maskFor(inner)
+                    local mask = self.clock and clockMaskFor(inner) or maskFor(inner)
                     if mask then
                         local o = math.floor((size - inner) / 2)
                         blitInk(bb, mask, x + o, y + o, inner, fg)
                     end
                     return
                 end
-                local mask = maskFor(size)
+                local mask = self.clock and clockMaskFor(size) or maskFor(size)
                 if not mask then return end
                 local dark = lightnessUnder(bb, x, y, size) < 128
                 local ink = dark and Blitbuffer.COLOR_WHITE or Blitbuffer.COLOR_BLACK
@@ -356,18 +431,28 @@ local function newMark(size)
             end)
         end
     end
-    return Mark:new{ size = size }
+    return Mark:new{ size = size, clock = clock }
 end
 
+-- "mark" (not on the device), "clock" (in the Queue, 1.3.1: shown even with the
+-- mark off, since it's what the reader just did), or false
 local function wantsMark(sw)
     local book = sw.book
-    if not (cfg.mark_not_on_device and sw.show_progress and type(book) == "table") then return false end
+    if not (sw.show_progress and type(book) == "table") then return false end
     if sw.is_bulk_selected then return false end
+    local Q = O.Queue
+    local any_queued = Q and not Q.isEmpty()
+    if not (cfg.mark_not_on_device or any_queued) then return false end
     local id, remote = boIdOf(book)
     if not id then markTrace(sw, book, nil, false, false) return false end
     local set = O.onDeviceIdSet and O.onDeviceIdSet() or {}
     -- on the device since the list was saved: the id set says so
-    local want = not set[id]
+    if set[id] then markTrace(sw, book, id, remote, false) return false end
+    if any_queued and (Q.has(id) or Q.statusOf(id)) then
+        markTrace(sw, book, id, remote, "clock")
+        return "clock"
+    end
+    local want = cfg.mark_not_on_device and "mark" or false
     markTrace(sw, book, id, remote, want)
     return want
 end
@@ -385,7 +470,7 @@ function Extras.hookNotOnDeviceMark()
     SW._renderShadowedCard = function(self, ...)
         local group, card_w, card_h = orig(self, ...)
         local okw, want = pcall(wantsMark, self)
-        if okw and want and type(group) == "table" and card_w and card_h and markFile() then
+        if okw and want and type(group) == "table" and card_w and card_h and (want == "clock" or markFile()) then
             pcall(function()
                 local Screen = require("device").screen
                 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -412,12 +497,17 @@ function Extras.hookNotOnDeviceMark()
                 group[#group + 1] = FrameContainer:new{
                     bordersize = 0, padding = 0,
                     padding_top = y, padding_left = inset,
-                    newMark(size),
+                    newMark(size, want == "clock"),
                 }
             end)
         end
         return group, card_w, card_h
     end
+end
+
+-- the cover hook, the first time something is queued with the mark off
+function Extras.ensureMarks()
+    Extras.hookNotOnDeviceMark()
 end
 
 return Extras

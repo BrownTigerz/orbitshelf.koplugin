@@ -597,6 +597,42 @@ local function clearPageCache()
     for k in pairs(page_cache) do page_cache[k] = nil end
 end
 
+-- 1.3.0: BookOrbit's reading status and progress, kept on the record as
+-- bookorbit_status / bookorbit_pct and shown through Bookshelf's own cover badges
+-- (status, read_status, book_pct, percent_finished) for books that aren't on the
+-- device. On the device KOReader's own status wins: the fields come off and
+-- Bookshelf reads the book's file as it always has. A list saved before 1.3.0
+-- has no bookorbit_status and is left as it was until its next refresh.
+local BO_STATUS = {
+    read = "finished", skimmed = "finished",
+    reading = "reading", rereading = "reading",
+    on_hold = "on_hold", abandoned = "abandoned",
+    unread = "unread", want_to_read = "unread",
+}
+local function applyReadState(rec)
+    if type(rec) ~= "table" then return rec end
+    if rec.downloaded or rec.bookorbit_status == nil then
+        if rec.bookorbit_state_on then
+            rec.status, rec.read_status, rec.book_pct, rec.percent_finished = nil, nil, nil, nil
+            rec.bookorbit_state_on = nil
+        end
+        return rec
+    end
+    local pct = tonumber(rec.bookorbit_pct)
+    -- a status waiting in the Queue (1.3.1) shows until it's sent
+    local queued = O.Queue and O.Queue.statusOf(rec.bookorbit_id)
+    local st = BO_STATUS[queued or rec.bookorbit_status]
+    if not st then
+        -- no status set in BookOrbit: progress alone says reading
+        st = (pct and pct > 0 and pct < 1) and "reading" or "unread"
+    end
+    if st == "finished" then pct = pct or 1 end
+    rec.status, rec.read_status = st, st
+    rec.book_pct, rec.percent_finished = pct, pct
+    rec.bookorbit_state_on = true
+    return rec
+end
+
 local function recordFromBo(book)
     local id = book.id
     local fp = liveBookPath(id)
@@ -626,7 +662,9 @@ local function recordFromBo(book)
     end
     local remote = "bookorbit://" .. tostring(id)
     local authors = authorList(book)
-    return Offline.fill({
+    local bo_pct = tonumber(book.progressPercentage)
+    if bo_pct then bo_pct = math.max(0, math.min(1, bo_pct / 100)) end
+    return applyReadState(Offline.fill({
         filepath = fp or remote,
         title = book.title or book.name or _("Untitled"),
         authors = authors,
@@ -648,7 +686,11 @@ local function recordFromBo(book)
         is_bookorbit = true,
         -- Bookshelf stamps source_kind itself; we also mark for owns()
         source_kind = SOURCE_ID,
-    })
+        -- "" when BookOrbit has no status for it (so a 1.3.0 record is told apart
+        -- from an older saved one, which has none at all)
+        bookorbit_status = type(book.readStatus) == "string" and book.readStatus or "",
+        bookorbit_pct = bo_pct,
+    }))
 end
 
 local function refreshCoverPaths(items)
@@ -669,6 +711,7 @@ local function refreshCoverPaths(items)
                 BoCovers.want(rec.bookorbit_id, rec.bookorbit_cv)
             end
             Offline.fill(rec)
+            applyReadState(rec)
         end
     end
     return items
@@ -682,7 +725,9 @@ local refreshing = {}
 local function listSignature(items)
     local parts = {}
     for _i, r in ipairs(items or {}) do
+        -- the reading status and progress too (1.3.0): a change there is saved and redrawn
         parts[#parts + 1] = tostring(r.bookorbit_id) .. ":" .. tostring(r.bookorbit_cv)
+            .. ":" .. tostring(r.bookorbit_status) .. ":" .. tostring(r.bookorbit_pct)
     end
     return table.concat(parts, ",")
 end
@@ -967,6 +1012,15 @@ local function downloadBookOrbitBook(book, on_done, opts)
             local file = pickFile(detail)
             if not file then return { err = "nofile" } end
             local util = require("util")
+            -- the Queue (1.3.1): enough room for this book? (50 MB kept free)
+            if opts.check_space then
+                local size = tonumber(file.sizeBytes)
+                local du = util.diskUsage and util.diskUsage(root)
+                local free = type(du) == "table" and tonumber(du.available) or nil
+                if size and free and size + 50 * 1024 * 1024 > free then
+                    return { err = "space", need = size, free = free }
+                end
+            end
             -- the server's folder layout under the download folder
             local rel
             local dp = tostring(file.devicePath or ""):gsub("\\", "/"):gsub("^/+", "")
@@ -1022,6 +1076,10 @@ local function downloadBookOrbitBook(book, on_done, opts)
                 if res.err == "details" then return fail(_("Could not load book details")) end
                 if res.err == "nofile" then return fail(_("No file this reader can open")) end
                 if res.err == "old" then return fail(_("This BookOrbit version can't download from here.")) end
+                if res.err == "space" then
+                    local mb = O.mb or function(b) return tostring(math.floor((b or 0) / 1048576)) .. " MB" end
+                    return fail(T(_("Not enough space: needs %1, %2 free"), mb(res.need), mb(res.free)))
+                end
                 if res.err ~= "cancelled" then
                     fail(T(_("Couldn't download it:\n%1"), res.err))
                 elseif opts.on_fail then
@@ -1032,6 +1090,8 @@ local function downloadBookOrbitBook(book, on_done, opts)
             local dest = res.dest
             -- on the device straight away, before BookOrbit links it
             rememberLocalDownload(id, dest)
+            -- downloaded some other way while it was queued: off the Queue
+            if O.Queue then pcall(O.Queue.removeDownload, id, true) end
             if on_done then pcall(on_done, dest) end
             -- the shelf shows it as on the device now, whoever started the download;
             -- before the link below, which is a network call
@@ -1150,7 +1210,7 @@ local function deleteBookFiles(book, path)
     return gone
 end
 
-local function removeFromDevice(book)
+local function removeFromDevice(book, on_done)
     local path = devicePathOf(book)
     if not path then
         UIManager:show(require("ui/widget/infomessage"):new{ text = _("Not on this device") })
@@ -1161,10 +1221,93 @@ local function removeFromDevice(book)
         ok_text = _("Remove"),
         ok_callback = function()
             deleteBookFiles(book, path)
+            -- the Book Page (1.3.4) draws itself again first, so the note shows over it
+            if on_done then pcall(on_done) end
             UIManager:show(require("ui/widget/infomessage"):new{
                 text = _("Removed from device"),
                 timeout = 2,
             })
+            local bs = getBookshelf()
+            if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
+        end,
+    })
+end
+
+-- 1.3.24: Remove Finished Books (Tools > OrbitShelf > Downloads). BookOrbit books on
+-- this Kobo that are finished (KOReader's own status, else BookOrbit's Read / Skimmed)
+-- and not opened here for N days (KOReader's history; never opened counts as old).
+-- Always asks first; the books stay in BookOrbit.
+local function finishedOnDevice(days)
+    local by_id = {}
+    for _k, e in pairs(page_cache) do
+        for _i, r in ipairs(type(e) == "table" and type(e.items) == "table" and e.items or {}) do
+            local rid = type(r) == "table" and tonumber(r.bookorbit_id)
+            if rid and not by_id[rid] then by_id[rid] = r end
+        end
+    end
+    local opened = {}
+    local RH = package.loaded["readhistory"]
+    if RH and type(RH.hist) == "table" then
+        for _i, h in ipairs(RH.hist) do
+            if type(h) == "table" and h.file and not opened[h.file] then opened[h.file] = tonumber(h.time) or 0 end
+        end
+    end
+    local cut = os.time() - math.max(0, tonumber(days) or 0) * 86400
+    local out = {}
+    for id, path in pairs(onDeviceByBookId(false)) do
+        local nid = tonumber(id)
+        if nid and type(path) == "string" then
+            local st, title
+            pcall(function()
+                local DocSettings = require("docsettings")
+                if DocSettings.hasSidecarFile and not DocSettings:hasSidecarFile(path) then return end
+                local ds = DocSettings:open(path)
+                local summary = ds:readSetting("summary")
+                st = type(summary) == "table" and summary.status or nil
+                local props = ds:readSetting("doc_props")
+                title = type(props) == "table" and props.title or nil
+            end)
+            local rec = by_id[nid]
+            local done
+            if st == "complete" then done = true
+            elseif st == nil or st == "" or st == "new" then
+                local bo = rec and rec.bookorbit_status
+                done = bo == "read" or bo == "skimmed"
+            end
+            if done and (opened[path] or 0) <= cut then
+                out[#out + 1] = { id = nid, path = path,
+                    title = tostring(rec and (rec.display_title or rec.title) or title or path:match("[^/]+$") or path),
+                    rec = rec or { bookorbit_id = nid, filepath = path } }
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.title < b.title end)
+    return out
+end
+
+local function removeFinishedBooks()
+    local days = tonumber(cfg.finished_days) or 30
+    local list = finishedOnDevice(days)
+    if #list == 0 then
+        UIManager:show(require("ui/widget/infomessage"):new{
+            text = days > 0 and T(_("No finished books here that you haven't opened in %1 days."), days)
+                or _("No finished books on this device."),
+        })
+        return
+    end
+    local names = {}
+    for i = 1, math.min(8, #list) do names[#names + 1] = "• " .. list[i].title end
+    if #list > 8 then names[#names + 1] = T(_("…and %1 more"), #list - 8) end
+    UIManager:show(require("ui/widget/confirmbox"):new{
+        text = T(_("Remove %1 finished books from this device?\n\n%2\n\nThey stay in BookOrbit."), #list, table.concat(names, "\n")),
+        ok_text = _("Remove"),
+        ok_callback = function()
+            local n = 0
+            for _i, b in ipairs(list) do
+                if deleteBookFiles(b.rec, b.path) ~= false then n = n + 1 end
+            end
+            UIManager:show(require("ui/widget/infomessage"):new{
+                text = T(_("Removed %1 books from this device."), n), timeout = 3 })
             local bs = getBookshelf()
             if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
         end,
@@ -1203,6 +1346,15 @@ local function closeBookMenu()
             end
         end
     end)
+    -- 2.0.0: the file browser's own long-press menu too
+    pcall(function()
+        local FM = package.loaded["apps/filemanager/filemanager"]
+        local fm = type(FM) == "table" and FM.instance
+        if type(fm) == "table" and fm.file_dialog then
+            UIManager:close(fm.file_dialog)
+            fm.file_dialog = nil
+        end
+    end)
 end
 
 local function registerFileDialogButton()
@@ -1225,10 +1377,27 @@ local function registerFileDialogButton()
             end,
         }}
     end)
-    -- a second row: Bulk Remove… / Reading Status… (each only with its setting on)
+    -- 2.0.0: Book Page, for a BookOrbit book on the device too (holding one opens
+    -- Bookshelf's own book menu). Its own registration, so the cards already there
+    -- keep their places in an arranged book menu.
+    FileManager.addFileDialogButtons(FileManager, "orbitshelf_book_page", function(file, is_file, book_props)
+        if not (is_file and O.BookPage) then return nil end
+        local id = bookIdForPath(file)
+        if not id then return nil end
+        local title = type(book_props) == "table" and book_props.title or nil
+        local rec = { bookorbit_id = id, filepath = file,
+            title = title or (file:match("([^/]+)%.[^./]+$") or file:match("([^/]+)$") or file) }
+        return {{
+            text = _("Book Page"),
+            callback = function()
+                closeBookMenu()
+                UIManager:nextTick(function() O.BookPage.show(rec) end)
+            end,
+        }}
+    end)
+    -- a second row: Bulk Remove… / Reading Status… (always there since 1.3.8)
     FileManager.addFileDialogButtons(FileManager, FILE_DIALOG_ID .. "_more", function(file, is_file, book_props)
         if not is_file then return nil end
-        if not (cfg.bulk_remove or cfg.read_status) then return nil end
         local id = bookIdForPath(file)
         if not id then return nil end
         local title = type(book_props) == "table" and book_props.title or nil
@@ -1429,7 +1598,6 @@ end
 -- Only with the Add To Collection setting on (off by default).
 
 local function collectionsApi()
-    if not O.cfg.add_to_collection then return nil end
     local C = package.loaded["bookorbit_tweaks_collections"]
     if type(C) == "table" and type(C.show) == "function" then return C end
     C = O.Collections
@@ -1473,11 +1641,31 @@ local function showNotOnDevice(book, ctx)
     end
     lines[#lines + 1] = _("Not On Device")
     local dialog
-    local buttons = {
-        {{ text = _("Download"), callback = function()
+    -- 1.3.1: Wi-Fi off, the book goes into the Queue (Download Now still offers Wi-Fi)
+    local Q = O.Queue
+    local queued = Q and Q.has(book)
+    local buttons = {}
+    if queued then
+        lines[#lines] = _("Not On Device · Queued")
+        buttons[#buttons + 1] = {{ text = _("Remove From Queue"), callback = function()
             UIManager:close(dialog)
-            downloadBookOrbitBook(book)
-        end }},
+            Q.removeDownload(tonumber(book.bookorbit_id))
+        end }}
+        buttons[#buttons + 1] = {{ text = _("Move To Top Of Queue"), callback = function()
+            UIManager:close(dialog)
+            Q.moveToTop(tonumber(book.bookorbit_id))
+        end }}
+    elseif Q and not isWifiOn() then
+        buttons[#buttons + 1] = {{ text = _("Add To Queue"), callback = function()
+            UIManager:close(dialog)
+            Q.addDownload(book)
+        end }}
+    end
+    buttons[#buttons + 1] = {{ text = (Q and not isWifiOn()) and _("Download Now") or _("Download"), callback = function()
+        UIManager:close(dialog)
+        downloadBookOrbitBook(book)
+    end }}
+    for _i, row in ipairs({
         {{ text = _("Open In BookOrbit"), callback = function()
             UIManager:close(dialog)
             openInBookOrbit(book)
@@ -1486,17 +1674,16 @@ local function showNotOnDevice(book, ctx)
             UIManager:close(dialog)
             showDescription(book)
         end }},
-    }
-    if canAddToCollection(book) then
-        buttons[#buttons + 1] = {{ text = _("Add To Collection"), callback = function()
+        -- 1.3.3: everything about the book on one page
+        O.BookPage and {{ text = _("Book Page"), callback = function()
             UIManager:close(dialog)
-            addToCollection(book)
-        end }}
-    end
-    local status = O.readStatusRow and O.readStatusRow(book, function() UIManager:close(dialog) end)
-    if status then buttons[#buttons + 1] = { status } end
-    local bulk = O.Bulk and O.Bulk.row(book, ctx and ctx.widget, function() UIManager:close(dialog) end)
-    if bulk then buttons[#buttons + 1] = { bulk } end
+            O.BookPage.show(book, ctx)
+        end }} or nil,
+    }) do buttons[#buttons + 1] = row end
+    -- 1.3.8: Add To Collection, Reading Status… and Bulk Download… are always there,
+    -- under one More… row (one row, not three)
+    local more = O.moreRow and O.moreRow(book, ctx and ctx.widget, function() UIManager:close(dialog) end)
+    if more then buttons[#buttons + 1] = { more } end
     buttons[#buttons + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }}
     dialog = ButtonDialog:new{ title = table.concat(lines, "\n"), buttons = buttons }
     UIManager:show(dialog)
@@ -1526,12 +1713,35 @@ O.page_cache = page_cache
 O.flushPageCache = flushPageCache
 O.forgetDownloading = forgetDownloading
 O.deleteBookFiles = deleteBookFiles
-O.devicePathOf = devicePathOf
 O.onDeviceIdSet = onDeviceIdSet
-O.onDeviceIdSetChanged = onDeviceIdSetChanged
 O.recordFromBo = recordFromBo
+
+-- Reading Status… saved a status: every saved copy of that book takes it now, so
+-- its cover changes without waiting for the next refresh. status false (2.0.1, Don't
+-- Send for a book that had none): the status comes off again
+function O.noteReadStatus(id, status)
+    id = tonumber(id)
+    if not id or (type(status) ~= "string" and status ~= false) then return end
+    status = status or nil
+    local changed = false
+    for _k, entry in pairs(page_cache) do
+        for _i, r in ipairs(type(entry) == "table" and type(entry.items) == "table" and entry.items or {}) do
+            if type(r) == "table" and tonumber(r.bookorbit_id) == id and r.bookorbit_status ~= status then
+                r.bookorbit_status = status
+                applyReadState(r)
+                changed = true
+            end
+        end
+    end
+    if O.BookPage then pcall(O.BookPage.changed, id) end
+    if not changed then return end
+    savePageCache()
+    local bs = getBookshelf()
+    if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
+end
 O.registerFileDialogButton = registerFileDialogButton
 O.removeFromDevice = removeFromDevice
+O.removeFinishedBooks = removeFinishedBooks
 O.savePageCache = savePageCache
 O.showNotOnDevice = showNotOnDevice
 return O

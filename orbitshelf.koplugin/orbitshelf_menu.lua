@@ -212,15 +212,15 @@ local function offlineMenu()
             {
                 text_func = function()
                     local names = { wifi = _("On Wi-Fi Connect"), refresh = _("On Refresh / Sync"),
-                        both = _("Both"), manual = _("Update Now Only") }
+                        both = _("Both"), manual = _("Off (Update Now only)") }
                     return T(_("Check For New Books: %1"), names[cfg.offline_update] or names.wifi)
                 end,
-                help_text = _("When Offline Library looks for new or changed books by itself. On Wi-Fi Connect: when KOReader starts and every time Wi-Fi connects (the default). On Refresh / Sync: when you tap the hero's Sync button or swipe down to refresh a BookOrbit shelf. Both. Update Now Only: never by itself. A run that was cut short by Wi-Fi going off always finishes when it's back."),
+                help_text = _("When Offline Library looks for new or changed books by itself. On Wi-Fi Connect: when KOReader starts and every time Wi-Fi connects (the default). On Refresh / Sync: when you tap the hero's Sync button or swipe down to refresh a BookOrbit shelf. Both. Off (Update Now only): never by itself; new books come in when you tap Update Now, the row below. A run that was cut short by Wi-Fi going off always finishes when it's back."),
                 enabled_func = function() return cfg.offline_library end,
                 sub_item_table = (function()
                     local out = {}
                     for _i, opt in ipairs({ { "wifi", _("On Wi-Fi Connect") }, { "refresh", _("On Refresh / Sync") },
-                            { "both", _("Both") }, { "manual", _("Update Now Only") } }) do
+                            { "both", _("Both") }, { "manual", _("Off (Update Now only)") } }) do
                         out[#out + 1] = {
                             text = opt[2],
                             radio = true,
@@ -255,6 +255,313 @@ local function offlineMenu()
     }
 end
 
+-- 1.3.8: one radio row of a choice menu
+local function radio(label, is_on, set)
+    return {
+        text = label,
+        radio = true,
+        keep_menu_open = true,
+        checked_func = is_on,
+        callback = function()
+            set()
+            saveConfig()
+        end,
+    }
+end
+
+-- 1.3.8: Flash as one choice, worked out from the eight 1.x switches (kept as they
+-- are). A mix that isn't one of the four shows as Custom and keeps working exactly as
+-- before until another choice is picked.
+local FLASH_POPUPS = { "flash_description", "flash_hold_menu", "flash_download_menu", "flash_book_menu", "flash_shelf_editor" }
+local function flashLevel()
+    local n = 0
+    for _i, k in ipairs(FLASH_POPUPS) do if cfg[k] then n = n + 1 end end
+    local popups = n == #FLASH_POPUPS and "all" or (n == 0 and "none" or "some")
+    if popups == "some" then return "custom" end
+    local shelf, hero = cfg.flash_shelf and true or false, cfg.flash_hero and true or false
+    if popups == "none" and not shelf and not hero then return "off" end
+    if popups == "all" and not shelf and not hero then return "popups" end
+    if popups == "all" and shelf and not hero then return "popups_shelf" end
+    if popups == "all" and shelf and hero then return "all" end
+    return "custom"
+end
+local FLASH_NAMES = { off = _("Off"), popups = _("Popups"), popups_shelf = _("Popups + Shelf Pages"),
+    all = _("Everything"), custom = _("Custom (kept from 1.x)") }
+local function setFlash(level)
+    local popups = level ~= "off"
+    for _i, k in ipairs(FLASH_POPUPS) do cfg[k] = popups end
+    cfg.flash_shelf = level == "popups_shelf" or level == "all"
+    cfg.flash_hero = level == "all"
+    pcall(O.hookPopupFlash)
+end
+
+local function flashMenu()
+    return {
+        text_func = function() return T(_("Flash: %1"), FLASH_NAMES[flashLevel()]) end,
+        help_text = _("Full refreshes to clear e-ink ghosting. Off: none. Popups: OrbitShelf's windows (Book Description, the hold and download menus) and Bookshelf's book menu and shelf editor flash when they open and close. Popups + Shelf Pages: also every shelf page turn. Everything: also the hero when it shows another book (see Hero Flash). Custom: the separate switches from 1.x, kept as you had them until you pick one of these."),
+        sub_item_table_func = function()
+            local out = {}
+            for _i, lv in ipairs({ "off", "popups", "popups_shelf", "all" }) do
+                out[#out + 1] = radio(FLASH_NAMES[lv], function() return flashLevel() == lv end, function() setFlash(lv) end)
+            end
+            out[#out + 1] = {
+                text = FLASH_NAMES.custom,
+                radio = true,
+                checked_func = function() return flashLevel() == "custom" end,
+                enabled_func = function() return false end,
+                separator = true,
+            }
+            out[#out + 1] = {
+                text_func = function()
+                    local n = tonumber(cfg.flash_hero_every) or 1
+                    return n <= 1 and _("Hero Flash: Every Change") or T(_("Hero Flash: Every %1th Change"), n)
+                end,
+                help_text = _("How often the hero flashes when it shows another book (with Flash: Everything). Every Change cleans every time but each tap waits for the flash; every 4th or 6th keeps most taps quick."),
+                enabled_func = function() return cfg.flash_hero end,
+                sub_item_table_func = function()
+                    local t = {}
+                    for _j, n in ipairs({ 1, 4, 6 }) do
+                        t[#t + 1] = radio(n == 1 and _("Every Change") or T(_("Every %1th Change"), n),
+                            function() return (tonumber(cfg.flash_hero_every) or 1) == n end,
+                            function() cfg.flash_hero_every = n end)
+                    end
+                    return t
+                end,
+            }
+            return out
+        end,
+    }
+end
+
+local function nextSeriesMenu()
+    local function mode()
+        if not cfg.next_in_series then return "off" end
+        return cfg.next_series_mode == "queue" and "queue" or "ask"
+    end
+    local names = { off = _("Off"), ask = _("Ask"), queue = _("Add To Queue") }
+    return {
+        text_func = function() return T(_("Next Book In Series: %1"), names[mode()]) end,
+        help_text = _("Finishing a BookOrbit book when the next one in its series isn't on the device. Ask: back on the home screen, you're asked whether to download it (nothing pops up inside the book). Add To Queue: no question, it goes into the Queue and downloads with Wi-Fi on (now, or at the next connect). Off by default."),
+        sub_item_table_func = function()
+            return {
+                radio(names.off, function() return mode() == "off" end, function() cfg.next_in_series = false end),
+                radio(names.ask, function() return mode() == "ask" end, function()
+                    cfg.next_in_series = true
+                    cfg.next_series_mode = "ask"
+                end),
+                radio(names.queue, function() return mode() == "queue" end, function()
+                    cfg.next_in_series = true
+                    cfg.next_series_mode = "queue"
+                end),
+            }
+        end,
+    }
+end
+
+local function closeXMenu()
+    local function side()
+        if not cfg.close_only_menu then return "off" end
+        return cfg.close_menu_side or "bottom"
+    end
+    local names = { off = _("Off"), left = _("Left"), right = _("Right"), bottom = _("Bookshelf's Side") }
+    local function set(v)
+        if v == "off" then
+            cfg.close_only_menu = false
+        else
+            cfg.close_only_menu = true
+            cfg.close_menu_side = v
+        end
+        saveConfig()
+        hookCloseOnlyMenu()
+        rebuildShelf()
+    end
+    return {
+        text_func = function() return T(_("Close X: %1"), names[side()]) end,
+        help_text = _("The footer's hamburger becomes a close X: one tap closes Bookshelf, no menu first. Left or Right: that bottom corner. Bookshelf's Side: where Bookshelf's own Start menu sits. Off: Bookshelf's hamburger as usual."),
+        sub_item_table_func = function()
+            local out = {}
+            for _i, v in ipairs({ "off", "left", "right", "bottom" }) do
+                out[#out + 1] = {
+                    text = names[v],
+                    radio = true,
+                    keep_menu_open = true,
+                    checked_func = function() return side() == v end,
+                    callback = function() set(v) end,
+                }
+            end
+            return out
+        end,
+    }
+end
+
+local function homeMenu()
+    local function tabName(id)
+        local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
+        local tab = ok and id and TabModel.getById(id)
+        return tab and tostring(tab.label or tab.id) or nil
+    end
+    local function set(on, target)
+        cfg.home_button = on
+        if on then cfg.home_target = target end
+        saveConfig()
+        pcall(O.hookHomeButton)
+        rebuildShelf()
+    end
+    return {
+        text_func = function()
+            if not cfg.home_button then return _("Home Button: Off") end
+            return T(_("Home Button: %1"), cfg.home_target and (tabName(cfg.home_target) or _("This Shelf")) or _("This Shelf"))
+        end,
+        help_text = _("A house in the footer corner opposite the close X / hamburger. This Shelf: one tap back to page 1 of the shelf you're on (inside a folder it comes back out first). Or pick a shelf: always page 1 of that one. Off by default."),
+        sub_item_table_func = function()
+            local t = {
+                {
+                    text = _("Off"), radio = true, keep_menu_open = true,
+                    checked_func = function() return not cfg.home_button end,
+                    callback = function() set(false) end,
+                },
+                {
+                    text = _("This Shelf"), radio = true, keep_menu_open = true,
+                    checked_func = function() return cfg.home_button and not cfg.home_target end,
+                    callback = function() set(true, false) end,
+                    separator = true,
+                },
+            }
+            local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
+            local tabs = ok and type(TabModel.getActive) == "function" and TabModel.getActive() or {}
+            for _i, tab in ipairs(tabs) do
+                local id = tab.id
+                t[#t + 1] = {
+                    text = tostring(tab.label or id), radio = true, keep_menu_open = true,
+                    checked_func = function() return cfg.home_button and cfg.home_target == id end,
+                    callback = function() set(true, id) end,
+                }
+            end
+            if #tabs == 0 then
+                t[#t + 1] = { text = _("Open Bookshelf once to list its shelves"), enabled_func = function() return false end }
+            end
+            return t
+        end,
+    }
+end
+
+-- 1.3.8: Download / Remove buttons and the Sync icon as one switch. Each 1.x switch is
+-- kept as it was; it shows on when either was on, and turning it on or off sets both.
+local function heroButtonsToggle()
+    return {
+        text = _("Hero Buttons"),
+        help_text = _("On the hero of a BookOrbit book: Download (Queue with Wi-Fi off) and Open In BookOrbit for one not on the device; small Remove From Device, Open In BookOrbit and Sync icons for one that is."),
+        checked_func = function() return (cfg.hero_pills or cfg.hero_sync) and true or false end,
+        keep_menu_open = true,
+        callback = function()
+            local on = not (cfg.hero_pills or cfg.hero_sync)
+            cfg.hero_pills, cfg.hero_sync = on, on
+            saveConfig()
+            rebuildShelf()
+        end,
+    }
+end
+
+local function group(label, items, help)
+    return { text = label, help_text = help, sub_item_table = items }
+end
+
+-- 2.0.0: Help, at the bottom of Tools › OrbitShelf. One topic per window (TextViewer).
+local HELP = {
+    { _("Getting Started"), _([[OrbitShelf puts your BookOrbit library inside Bookshelf.
+
+1. Sign in to BookOrbit (BookOrbit's own menu).
+2. Tools › OrbitShelf › Shelves › Use BookOrbit In Bookshelf.
+3. In Bookshelf's shelf editor, pick BookOrbit shelves: Recently Added, Authors, Series, Genres, Queue, Up Next and more.
+
+Tap a book on the device to open it. Tap one that isn't to see it in the hero (Download / Status / BookOrbit). Hold a book for its Book Page or the quick menu (Books › Hold A Book Opens).]]) },
+    { _("Shelves"), _([[BookOrbit shelves come from your library list, saved on the device, so they open quickly and work offline.
+
+• Up Next: for every series you've started, the next book after the furthest one you've read or are reading. A series with a missing or doubled number is skipped.
+• Queue: books waiting to download. A reading status waiting for Wi-Fi shows on the book; Don't Send in its Reading Status drops it.
+• Return To: which shelf Bookshelf opens on after you close a book.
+• Search BookOrbit: search your BookOrbit library from Bookshelf's search.]]) },
+    { _("Book Page"), _([[Hold a book (or pick Book Page from a book's menu) for its page. A book on this Kobo: hold it for Bookshelf's book menu, then Book Page.
+
+• Top: Bulk Download, Bulk Remove, Help; where the book is and free space; X closes it.
+• Beside the cover: Download / Open, Reading Status / Collection, BookOrbit / Remove. A tall book has them under the cover.
+• The status line: Reading, progress, and when it was last read (this Kobo's history or BookOrbit's). A book finished on this Kobo shows when.
+• Tap the title for all of it, tap the description to read it all.
+• The bottom: the series, more by the author, or similar books. Similar books are one tap away (Similar ›, or swipe left past the series / More by); ‹ Series or a swipe right goes back. Covers show their status (Read, On Hold 30%…) and On device / Queued.
+• BookOrbit opens over the page; closing it comes back here. Sleep closes the page.]]) },
+    { _("Downloads And The Queue"), _([[With Wi-Fi off, Download becomes Queue and Reading Status changes are saved to send later. A clock mark shows queued books.
+
+The queue runs once, 15 seconds after Wi-Fi connects (or Download Queue Now): statuses first, then the books one at a time. A book that doesn't fit (50 MB kept free) stays queued with a note. Sleep pauses it.
+
+Bulk Download / Bulk Remove: tick books on the shelf. Bulk Remove › Select › Finished Books ticks only the finished ones.
+
+Remove Finished Books: removes the finished BookOrbit books you haven't opened here for a while (Not Opened For). It always asks first. Books stay in BookOrbit.]]) },
+    { _("Offline Library"), _([[Saves each book's details (description, pages, genres) so the Book Page and Genres work without Wi-Fi.
+
+Check For New Books: when it looks for new books by itself: on Wi-Fi connect, on Sync / a swipe-down refresh, both, or Off (Update Now only).
+
+Build / Rebuild Genres runs in the background and carries on after sleep.]]) },
+    { _("Look, Footer And Flashing"), _([[• Hero Buttons and their size: the hero's Download / Status / BookOrbit and the round icons.
+• Cover Marks: the Not On Device mark and the Queue clock; Mark Style picks how they look.
+• Flash: how often the screen does a full refresh (Off, Popups, Popups + Shelf Pages, Everything).
+• Footer: the critter and what it says, the Close X, and the Home button.]]) },
+    { _("Something's Wrong"), _([[• Shelves empty: check BookOrbit's sign-in and Wi-Fi, then Sync. Saved lists still show offline.
+• A book missing: Sync, or Offline › Update Now.
+• Slow or odd: Advanced › Diagnostics writes what OrbitShelf does to crash.log for 30 minutes after each start (off by itself after 3 days). Send crash.log.
+• Clean Up Cache frees cover space; covers come back when shown.]]) },
+    -- "What's New": newest version first; older versions stay below
+    { _("What's New"), _([[2.0
+• The Book Page: everything about a book on one page.
+• The Queue: downloads and reading statuses wait for Wi-Fi.
+• Up Next shelf, Similar books, status on covers, finished dates.
+• Remove Finished Books, and a Finished filter in Bulk Remove.
+• Settings regrouped (Shelves, Books, Downloads, Look, Offline, Footer, Advanced); Add To Collection, Reading Status and Bulk Download / Remove are always there.
+• This Help.
+
+Nothing you set was changed by the update.]]) },
+}
+
+-- 2.0.0: a topic opens in a window sized to its text (up to 80% of the screen; a
+-- longer one scrolls), not full screen
+local function showHelp(title, text)
+    local Screen = require("device").screen
+    local TextViewer = require("ui/widget/textviewer")
+    local width = math.floor(Screen:getWidth() * 0.88)
+    local max_h = math.floor(Screen:getHeight() * 0.8)
+    local viewer = TextViewer:new{ title = title, text = text, width = width, height = max_h }
+    local ok, want = pcall(function()
+        local TextBoxWidget = require("ui/widget/textboxwidget")
+        local box = viewer.box_widget
+        local pad = 2 * viewer.text_padding + 2 * viewer.text_margin
+        local measure = TextBoxWidget:new{
+            text = text, face = box.face, width = box.width, justified = box.justified,
+        }
+        local text_h = measure:getSize().h
+        measure:free()
+        return viewer.titlebar:getHeight() + viewer.button_table:getSize().h + pad + text_h
+            + Screen:scaleBySize(4)
+    end)
+    if ok and type(want) == "number" and want < max_h then
+        viewer:free()
+        viewer = TextViewer:new{ title = title, text = text, width = width, height = want }
+    end
+    UIManager:show(viewer)
+end
+
+local function helpMenu()
+    local sub = {}
+    for _i, topic in ipairs(HELP) do
+        sub[#sub + 1] = {
+            text = topic[1],
+            keep_menu_open = true,
+            callback = function()
+                showHelp(topic[1], topic[2])
+            end,
+        }
+    end
+    return { text = _("Help"), help_text = _("How OrbitShelf works, one topic at a time."), sub_item_table = sub }
+end
+
 local function menuItems()
     local bo_ok = function() return bookOrbitInstalled() end
     local items = {}
@@ -263,20 +570,9 @@ local function menuItems()
     elseif not bookOrbitSignedIn() then
         items[#items + 1] = { text = _("Sign in to BookOrbit first"), enabled_func = function() return false end, separator = true }
     end
-    items[#items + 1] = toggle("use_bookorbit", _("Use BookOrbit In Bookshelf"),
-        _("Adds a BookOrbit shelf source to Bookshelf: Library, Recently added, Recently read, Series, Authors, Genres and Collections, books not on the device included."),
-        function()
-            if cfg.use_bookorbit then registerSource() else unregisterSource() end
-        end, bo_ok)
-    items[#items + 1] = toggle("auto_rewrite_stock", _("Rewrite Stock Series / Authors / Genres"),
-        _("Points Bookshelf's own Series, Authors, Genres, Recent and Latest chips at BookOrbit. Off puts the stock chips back."),
-        function()
-            pcall(applyAutoRewrite)
-            local bs = getBookshelf()
-            if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
-        end, function() return cfg.use_bookorbit and bookOrbitInstalled() end)
-    items[#items].separator = true
-    items[#items + 1] = {
+
+    -- Shelves
+    local return_to = {
         text_func = function()
             local id = cfg.return_shelf
             if not id then return _("Return To: Bookshelf's Choice") end
@@ -305,314 +601,263 @@ local function menuItems()
             end
             return out
         end,
-        separator = true,
     }
-    items[#items + 1] = {
-        text = _("Add To Collection"),
-        sub_item_table = {
-            toggle("add_to_collection", _("Add To Collection In Book Menu"),
-                _("Hold the hero, or tap a book that isn't on the device: Add To Collection lists your BookOrbit collections (✓ = the book is in it). Tap one to add or remove the book, or make a new collection. It signs in like the web app, with your BookOrbit password. With BookOrbit Tweaks installed it uses that patch's sign-in; the saved password is shared either way."),
-                nil),
-            {
-                text = _("Forget Saved BookOrbit Password"),
-                help_text = _("The password Add To Collection saved on this device (encrypted). You'll be asked again next time."),
-                enabled_func = function() return O.Collections ~= nil and O.Collections.hasSaved() end,
-                callback = function() O.Collections.forget() end,
-            },
-            {
-                text = _("About The Saved Password"),
-                keep_menu_open = true,
-                callback = function() O.Collections.about() end,
-            },
+    items[#items + 1] = group(_("Shelves"), {
+        toggle("use_bookorbit", _("Use BookOrbit In Bookshelf"),
+            _("Adds a BookOrbit shelf source to Bookshelf: Library, Recently added, Recently read, Series, Authors, Genres, Queue and Collections, books not on the device included."),
+            function()
+                if cfg.use_bookorbit then registerSource() else unregisterSource() end
+            end, bo_ok),
+        toggle("auto_rewrite_stock", _("Rewrite Stock Series / Authors / Genres"),
+            _("Points Bookshelf's own Series, Authors, Genres, Recent and Latest chips at BookOrbit. Off puts the stock chips back."),
+            function()
+                pcall(applyAutoRewrite)
+                local bs = getBookshelf()
+                if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
+            end, function() return cfg.use_bookorbit and bookOrbitInstalled() end),
+        return_to,
+        toggle("search_bookorbit", _("Search BookOrbit"),
+            _("Bookshelf's search looks in your BookOrbit library instead of the books on the device. Results open like a folder; back returns to where you were. With Wi-Fi off it searches the saved library list (title, author, series, genres). Off by default."),
+            nil),
+    })
+
+    -- Books
+    items[#items + 1] = group(_("Books"), {
+        {
+            text_func = function()
+                return T(_("Hold A Book Opens: %1"), cfg.hold_opens == "page" and _("Book Page") or _("Quick Menu"))
+            end,
+            help_text = _("Holding a BookOrbit book that isn't on the device. Quick Menu (the default): the small menu with Download, Open In BookOrbit, Book Page and More… (Add To Collection, Reading Status, Bulk Download). Book Page: one full page with the cover, details, status, all the buttons, the description, the series in order and more by the author (or similar books); it works offline from what's saved."),
+            sub_item_table_func = function()
+                return {
+                    radio(_("Quick Menu"), function() return (cfg.hold_opens or "menu") == "menu" end, function() cfg.hold_opens = "menu" end),
+                    radio(_("Book Page"), function() return cfg.hold_opens == "page" end, function() cfg.hold_opens = "page" end),
+                }
+            end,
         },
-    }
-    items[#items + 1] = {
-        text = _("Extras"),
-        sub_item_table = {
-            toggle("bulk_download", _("Bulk Download"),
-                _("Hold a book that isn't on the device (or the hero): Bulk Download… lists that shelf's books that aren't on the device, with the one you held ticked. Tick more (Select… for All, Same Series, Same Author or None) and tap Download. It checks the size and free space first, then downloads one at a time; hold a book again to stop. Sleep pauses it and waking asks whether to continue."),
-                nil),
-            toggle("bulk_remove", _("Bulk Remove"),
-                _("Hold a BookOrbit book that's on the device (or the hero): Bulk Remove… lists that shelf's books on the device. Tick the ones to remove and confirm. They stay in BookOrbit."),
-                nil),
-            toggle("read_status", _("Reading Status"),
-                _("Hold a BookOrbit book: Reading Status… sets it in BookOrbit (Want To Read, Reading, On Hold, Read, Abandoned, Unread), for books you read somewhere else. Needs Wi-Fi."),
-                nil),
-            toggle("next_in_series", _("Next In Series"),
-                _("Finish a BookOrbit book: if the next one in its series isn't on the device, you're asked once you're back on the home screen whether to download it. Nothing pops up inside the book."),
-                nil),
-        },
-    }
-    items[#items + 1] = offlineMenu()
-    items[#items + 1] = {
-        text = _("Hero"),
-        sub_item_table = {
-            toggle("hero_pills", _("Download / Remove Buttons"),
-                _("A BookOrbit book not on the device: Download and Open In BookOrbit at the bottom of the hero. One on the device: small Remove From Device and Open In BookOrbit icons at the bottom right."),
-                rebuildShelf),
-            toggle("hero_sync", _("Sync Button"),
-                _("A small Sync icon at the bottom right of the hero for BookOrbit books: pulls the BookOrbit lists fresh and runs BookOrbit's sync all books."),
-                rebuildShelf),
-            {
-                text_func = function()
-                    local names = { small = _("Small"), medium = _("Medium"), large = _("Large") }
-                    return T(_("Button Size: %1"), names[cfg.hero_button_size] or names.small)
-                end,
-                help_text = _("Size of the hero's Download / Open In BookOrbit buttons and the round Remove / Open / Sync icons. Small leaves the most room for the description."),
-                enabled_func = function() return cfg.hero_pills or cfg.hero_sync end,
-                sub_item_table = (function()
-                    local out = {}
-                    for _i, opt in ipairs({ { "small", _("Small") }, { "medium", _("Medium") }, { "large", _("Large") } }) do
-                        out[#out + 1] = {
-                            text = opt[2],
-                            radio = true,
-                            checked_func = function() return (cfg.hero_button_size or "small") == opt[1] end,
-                            keep_menu_open = true,
-                            callback = function()
-                                cfg.hero_button_size = opt[1]
-                                saveConfig()
-                                rebuildShelf()
-                            end,
-                        }
-                    end
-                    return out
-                end)(),
-            },
-        },
-    }
-    items[#items + 1] = {
-        text = _("Shelf"),
-        sub_item_table = {
-            {
-                text_func = function()
-                    local books = Genres.library() or {}
-                    local left = #Genres.missing(books)
-                    if Genres.running and Genres.full then
-                        return _("Genres: coming with Offline Library")
-                    elseif Genres.running then
-                        return T(_("Genres: building, %1 of %2"), Genres.done, Genres.total)
-                    elseif left == 0 and #books > 0 then
-                        return _("Genres: ready")
-                    end
-                    return T(_("Build Genres (%1 books)"), left)
-                end,
-                help_text = _("BookOrbit doesn't send genres with its book lists, so each book's genres and tags are looked up once from its BookOrbit page, in the background (about 2 minutes for 130 books, Wi-Fi on). Books on the device use the genres in their own file. Wi-Fi off pauses it; it carries on when Wi-Fi is back. Afterwards only new or changed books are looked up."),
-                enabled_func = function() return bookOrbitInstalled() and not Genres.running end,
-                keep_menu_open = true,
-                callback = function() Genres.asked = true; Genres.build(false) end,
-            },
-            {
-                text = _("Rebuild Genres"),
-                help_text = _("Forgets the saved genres and looks every book up again. Use it after changing genres or tags in BookOrbit for many books at once."),
-                enabled_func = function() return bookOrbitInstalled() and not Genres.running end,
-                keep_menu_open = true,
-                callback = function()
-                    UIManager:show(require("ui/widget/confirmbox"):new{
-                        text = _("Rebuild genres?\n\nEvery book's genres are looked up again, in the background."),
-                        ok_text = _("Rebuild"),
-                        ok_callback = function()
-                            Genres.store = {}
-                            Genres.save()
-                            Genres.asked = true
-                            Genres.build(false)
-                        end,
-                    })
-                end,
-                separator = true,
-            },
-            toggle("search_bookorbit", _("Search BookOrbit"),
-                _("Bookshelf's search looks in your BookOrbit library instead of the books on the device. Results open like a folder; back returns to where you were. With Wi-Fi off it searches the saved library list (title, author, series, genres). Off by default."),
-                nil),
-            toggle("mark_not_on_device", _("Mark Books Not On Device"),
-                _("BookOrbit's download mark (the same one as in the Side Panel) on the bottom-left of a BookOrbit cover whose book isn't on the device, so you can see at a glance what's still to download. Books on the device stay as they are. The page count keeps the bottom-right. Covers view only. Off by default."),
-                function()
-                    O.Extras.hookNotOnDeviceMark()
-                    -- Bookshelf keeps built pages for quick turns back; drop them so
-                    -- every cover is drawn again with (or without) the mark
-                    local bs = getBookshelf()
-                    if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
-                    rebuildShelf()
-                end),
-            {
-                text_func = function()
-                    return T(_("Mark Style: %1"), cfg.mark_style == "badge" and _("Badge") or _("Auto Black / White"))
-                end,
-                help_text = _("How the Not On Device mark looks. Auto Black / White: black on a light cover, white on a dark one, with a thin outline so it reads on a busy corner. Badge: on a small round disc in Bookshelf's badge colours, like the page count. Auto by default."),
-                enabled_func = function() return cfg.mark_not_on_device end,
-                sub_item_table_func = function()
-                    local function opt(value, label)
-                        return {
-                            text = label,
-                            radio = true,
-                            keep_menu_open = true,
-                            checked_func = function() return (cfg.mark_style or "auto") == value end,
-                            callback = function()
-                                cfg.mark_style = value
-                                saveConfig()
-                                local bs = getBookshelf()
-                                if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
-                                rebuildShelf()
-                            end,
-                        }
-                    end
-                    return { opt("auto", _("Auto Black / White")), opt("badge", _("Badge")) }
-                end,
-            },
-        },
-    }
-    items[#items + 1] = {
-        text = _("Flash"),
-        help_text = _("Full refreshes to clear e-ink ghosting, each one on its own. All off by default; turn on only the ones you need."),
-        sub_item_table = {
-            toggle("flash_hero", _("Hero When It Changes"),
-                _("Flashes the hero clean when it shows another book, so the last cover doesn't show faintly behind the new one. Takes a moment longer. Off by default."),
-                nil),
-            {
-                text_func = function()
-                    local n = tonumber(cfg.flash_hero_every) or 1
-                    return n <= 1 and _("Hero: Every Change") or T(_("Hero: Every %1th Change"), n)
-                end,
-                help_text = _("How often the hero flashes when Hero When It Changes is on. Every Change cleans every time but each tap waits for the flash; every 4th or 6th keeps most taps quick and still clears the ghosting regularly."),
-                enabled_func = function() return cfg.flash_hero end,
-                sub_item_table = (function()
-                    local out = {}
-                    for _i, n in ipairs({ 1, 4, 6 }) do
-                        out[#out + 1] = {
-                            text = n == 1 and _("Every Change") or T(_("Every %1th Change"), n),
-                            radio = true,
-                            checked_func = function() return (tonumber(cfg.flash_hero_every) or 1) == n end,
-                            keep_menu_open = true,
-                            callback = function()
-                                cfg.flash_hero_every = n
-                                saveConfig()
-                            end,
-                        }
-                    end
-                    return out
-                end)(),
-            },
-            (function()
-                local t = toggle("flash_shelf", _("Shelf Page Turns"),
-                    _("Every page turn of the shelf is a full refresh, to clear ghosting. Page turns skip their animation and take a little longer. Bookshelf's own \"Use E-ink refresh rate for shelf pages\" flashes only as often as KOReader's Full refresh rate. Off by default."),
-                    nil)
-                t.separator = true
-                return t
-            end)(),
-            toggle("flash_description", _("Book Description"),
-                _("The Book Description popup flashes when it opens and when it closes, to clear ghosting. Off by default."), nil),
-            toggle("flash_hold_menu", _("Hold Menu (BookOrbit Books)"),
-                _("OrbitShelf's menu when you hold the hero of a BookOrbit book flashes when it opens and when it closes. Off by default."), nil),
-            toggle("flash_download_menu", _("Download Window"),
-                _("The window for a book that isn't on the device (Download, Open In BookOrbit, Book Description …) flashes when it opens and when it closes. Off by default."), nil),
-            toggle("flash_book_menu", _("Bookshelf's Book Menu"),
-                _("Bookshelf's own menu when you hold a book that's on the device flashes when it opens and when it closes. Off by default."),
-                function() O.hookPopupFlash() end),
-            toggle("flash_shelf_editor", _("Shelf Editor"),
-                _("Bookshelf's shelf editor (hold a shelf tab) flashes when it opens and when it closes. Off by default."),
-                function() O.hookPopupFlash() end),
-        },
-    }
-    items[#items + 1] = {
-        text = _("Footer"),
-        sub_item_table = {
-            toggle("footer_critter", _("Footer Critter"),
-                _("Your SimpleUI critter in place of the page numbers at the bottom. Tap it for another line; the left and right edges still turn the page."),
-                function() hookFooterCritter() rebuildShelf() end),
-            {
-                text = _("Critter Says"),
-                enabled_func = function() return cfg.footer_critter end,
-                sub_item_table = {
-                    critterSays("critter_say_page", _("Page")),
-                    critterSays("critter_say_witty", _("Witty")),
-                    critterSays("critter_say_recs", _("Picks")),
-                    critterSays("critter_say_quotes", _("Sayings")),
+        nextSeriesMenu(),
+        {
+            text = _("BookOrbit Sign-In"),
+            help_text = _("Add To Collection signs in like the web app, with your BookOrbit password (saved on this device, encrypted). With BookOrbit Tweaks installed it uses that patch's sign-in; the saved password is shared either way."),
+            sub_item_table = {
+                {
+                    text = _("Forget Saved BookOrbit Password"),
+                    help_text = _("The password Add To Collection saved on this device (encrypted). You'll be asked again next time."),
+                    enabled_func = function() return O.Collections ~= nil and O.Collections.hasSaved() end,
+                    callback = function() O.Collections.forget() end,
                 },
-                separator = true,
-            },
-            toggle("close_only_menu", _("Close Only (No Hamburger)"),
-                _("The hamburger becomes a close X: one tap closes Bookshelf, no menu first."),
-                function() hookCloseOnlyMenu() rebuildShelf() end),
-            {
-                text_func = function()
-                    return T(_("Close Control: %1"),
-                        cfg.close_menu_side == "left" and _("Left")
-                        or cfg.close_menu_side == "right" and _("Right")
-                        or _("Bookshelf's Side"))
-                end,
-                enabled_func = function() return cfg.close_only_menu end,
-                help_text = _("Which bottom corner the close X sits in. Bookshelf's Side follows Bookshelf's own Start menu position (left unless you changed it there)."),
-                sub_item_table = (function()
-                    local t = {}
-                    for _i, side in ipairs({ { "left", _("Left") }, { "right", _("Right") }, { "bottom", _("Bookshelf's Side") } }) do
-                        t[#t + 1] = {
-                            text = side[2],
-                            radio = true,
-                            keep_menu_open = true,
-                            checked_func = function() return (cfg.close_menu_side or "bottom") == side[1] end,
-                            callback = function()
-                                cfg.close_menu_side = side[1]
-                                saveConfig()
-                                hookCloseOnlyMenu()
-                                rebuildShelf()
-                            end,
-                        }
-                    end
-                    return t
-                end)(),
-                separator = true,
-            },
-            toggle("home_button", _("Home Button"),
-                _("A house in the footer corner opposite the close X / hamburger. One tap goes back to page 1 (see Home Goes To); inside a folder or group it comes back out to the shelf. Handy after paging deep into a big library. Not shown while selecting books, or when Bookshelf's full-screen grid button already has that corner. Off by default."),
-                function() O.hookHomeButton() rebuildShelf() end),
-            {
-                text_func = function()
-                    local name = _("This Shelf")
-                    if cfg.home_target then
-                        local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
-                        local tab = ok and TabModel.getById(cfg.home_target)
-                        name = tab and tostring(tab.label or tab.id) or _("This Shelf")
-                    end
-                    return T(_("Home Goes To: %1"), name)
-                end,
-                enabled_func = function() return cfg.home_button end,
-                help_text = _("This Shelf: page 1 of whichever shelf you're on. Or pick a shelf: Home always goes to page 1 of that one. If the picked shelf is deleted, Home goes to page 1 of the shelf you're on."),
-                sub_item_table_func = function()
-                    local t = {
-                        {
-                            text = _("This Shelf"),
-                            radio = true,
-                            keep_menu_open = true,
-                            checked_func = function() return not cfg.home_target end,
-                            callback = function() cfg.home_target = false saveConfig() end,
-                            separator = true,
-                        },
-                    }
-                    local ok, TabModel = pcall(require, "lib/bookshelf_tab_model")
-                    local tabs = ok and type(TabModel.getActive) == "function" and TabModel.getActive() or {}
-                    for _i, tab in ipairs(tabs) do
-                        local id = tab.id
-                        t[#t + 1] = {
-                            text = tostring(tab.label or id),
-                            radio = true,
-                            keep_menu_open = true,
-                            checked_func = function() return cfg.home_target == id end,
-                            callback = function() cfg.home_target = id saveConfig() end,
-                        }
-                    end
-                    if #tabs == 0 then
-                        t[#t + 1] = { text = _("Open Bookshelf once to list its shelves"), enabled_func = function() return false end }
-                    end
-                    return t
-                end,
+                {
+                    text = _("About The Saved Password"),
+                    keep_menu_open = true,
+                    callback = function() O.Collections.about() end,
+                },
             },
         },
+    })
+
+    -- Downloads (the Queue)
+    if O.Queue then
+        local q = O.Queue.menu()
+        items[#items + 1] = {
+            text = _("Downloads"),
+            help_text = q.help_text,
+            sub_item_table_func = function()
+                local sub = q.sub_item_table_func()
+                table.insert(sub, 1, { text_func = q.text_func, enabled_func = function() return false end })
+                -- 1.3.24: Remove Finished Books
+                local at = 2
+                table.insert(sub, at, {
+                    text = _("Remove Finished Books…"),
+                    help_text = _("Removes the BookOrbit books on this device that are finished (KOReader's own status, or Read / Skimmed in BookOrbit) and that you haven't opened here for the time below. It lists them and asks first. They stay in BookOrbit."),
+                    callback = function() O.removeFinishedBooks() end,
+                })
+                table.insert(sub, at + 1, {
+                    text_func = function()
+                        local d = tonumber(cfg.finished_days) or 30
+                        return d > 0 and T(_("Not Opened For: %1 Days"), d) or _("Not Opened For: Any Time")
+                    end,
+                    help_text = _("Remove Finished Books only offers books you haven't opened on this device for this long. Any Time offers every finished book."),
+                    separator = true,
+                    sub_item_table_func = function()
+                        local out = {}
+                        for _i, d in ipairs({ 0, 7, 30, 90 }) do
+                            out[#out + 1] = {
+                                text = d > 0 and T(_("%1 Days"), d) or _("Any Time"),
+                                radio = true,
+                                checked_func = function() return (tonumber(cfg.finished_days) or 30) == d end,
+                                callback = function()
+                                    cfg.finished_days = d
+                                    O.saveConfig()
+                                end,
+                            }
+                        end
+                        return out
+                    end,
+                })
+                return sub
+            end,
+        }
+    end
+
+    -- Look
+    local hero_size = {
+        text_func = function()
+            local names = { small = _("Small"), medium = _("Medium"), large = _("Large") }
+            return T(_("Hero Button Size: %1"), names[cfg.hero_button_size] or names.small)
+        end,
+        help_text = _("Size of the hero's Download / Open In BookOrbit buttons and the round Remove / Open / Sync icons. Small leaves the most room for the description."),
+        enabled_func = function() return cfg.hero_pills or cfg.hero_sync end,
+        sub_item_table_func = function()
+            local out = {}
+            for _i, opt in ipairs({ { "small", _("Small") }, { "medium", _("Medium") }, { "large", _("Large") } }) do
+                out[#out + 1] = {
+                    text = opt[2], radio = true, keep_menu_open = true,
+                    checked_func = function() return (cfg.hero_button_size or "small") == opt[1] end,
+                    callback = function()
+                        cfg.hero_button_size = opt[1]
+                        saveConfig()
+                        rebuildShelf()
+                    end,
+                }
+            end
+            return out
+        end,
         separator = true,
     }
-    items[#items + 1] = cleanUpCacheItem()
-    items[#items + 1] = toggle("diagnostics", _("Diagnostics"),
-        _("For troubleshooting: writes what OrbitShelf does (shelf loads, covers, downloads, hero, timings) to crash.log, tagged \"orbitshelf diag\", for 30 minutes after each start or after turning it on. Turns itself off after 3 days. Problems go to crash.log either way. Off by default."),
-        function() if cfg.diagnostics then O.startDiag(true) end end)
+    local function clearPages()
+        local bs = getBookshelf()
+        if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
+        rebuildShelf()
+    end
+    items[#items + 1] = group(_("Look"), {
+        heroButtonsToggle(),
+        hero_size,
+        toggle("mark_not_on_device", _("Cover Marks"),
+            _("A small mark on the bottom-left of a BookOrbit cover whose book isn't on the device (BookOrbit's download mark), so you can see at a glance what's still to download. A book in the Queue shows a clock there either way. Reading status and progress use Bookshelf's own badges. Covers view only. Off by default."),
+            function()
+                O.Extras.hookNotOnDeviceMark()
+                clearPages()
+            end),
+        {
+            text_func = function()
+                return T(_("Mark Style: %1"), cfg.mark_style == "badge" and _("Badge") or _("Auto Black / White"))
+            end,
+            help_text = _("How the cover mark looks. Auto Black / White: black on a light cover, white on a dark one, with a thin outline so it reads on a busy corner. Badge: on a small round disc in Bookshelf's badge colours, like the page count. Auto by default."),
+            enabled_func = function() return cfg.mark_not_on_device end,
+            sub_item_table_func = function()
+                return {
+                    radio(_("Auto Black / White"), function() return (cfg.mark_style or "auto") == "auto" end,
+                        function() cfg.mark_style = "auto" clearPages() end),
+                    radio(_("Badge"), function() return cfg.mark_style == "badge" end,
+                        function() cfg.mark_style = "badge" clearPages() end),
+                }
+            end,
+            separator = true,
+        },
+        flashMenu(),
+    })
+
+    -- Offline (Offline Library + genres)
+    local off = offlineMenu().sub_item_table
+    local genres_build = {
+        text_func = function()
+            local books = Genres.library() or {}
+            local left = #Genres.missing(books)
+            if Genres.running and Genres.full then
+                return _("Genres: coming with Offline Library")
+            elseif Genres.running then
+                return T(_("Genres: building, %1 of %2"), Genres.done, Genres.total)
+            elseif left == 0 and #books > 0 then
+                return _("Genres: ready")
+            end
+            return T(_("Build Genres (%1 books)"), left)
+        end,
+        help_text = _("BookOrbit doesn't send genres with its book lists, so each book's genres and tags are looked up once from its BookOrbit page, in the background (about 2 minutes for 130 books, Wi-Fi on). Books on the device use the genres in their own file. Wi-Fi off pauses it; it carries on when Wi-Fi is back. Afterwards only new or changed books are looked up. Offline Library does this too."),
+        enabled_func = function() return bookOrbitInstalled() and not Genres.running end,
+        keep_menu_open = true,
+        callback = function() Genres.asked = true; Genres.build(false) end,
+    }
+    local genres_rebuild = {
+        text = _("Rebuild Genres"),
+        help_text = _("Forgets the saved genres and looks every book up again. Use it after changing genres or tags in BookOrbit for many books at once."),
+        enabled_func = function() return bookOrbitInstalled() and not Genres.running end,
+        keep_menu_open = true,
+        callback = function()
+            UIManager:show(require("ui/widget/confirmbox"):new{
+                text = _("Rebuild genres?\n\nEvery book's genres are looked up again, in the background."),
+                ok_text = _("Rebuild"),
+                ok_callback = function()
+                    Genres.store = {}
+                    Genres.save()
+                    Genres.asked = true
+                    Genres.build(false)
+                end,
+            })
+        end,
+    }
+    off[#off].separator = true
+    off[#off + 1] = genres_build
+    off[#off + 1] = genres_rebuild
+    items[#items + 1] = group(_("Offline"), off)
+
+    -- Footer
+    items[#items + 1] = group(_("Footer"), {
+        toggle("footer_critter", _("Footer Critter"),
+            _("Your SimpleUI critter in place of the page numbers at the bottom. Tap it for another line; the left and right edges still turn the page."),
+            function() hookFooterCritter() rebuildShelf() end),
+        {
+            text = _("Critter Says"),
+            enabled_func = function() return cfg.footer_critter end,
+            sub_item_table = {
+                critterSays("critter_say_page", _("Page")),
+                critterSays("critter_say_witty", _("Witty")),
+                critterSays("critter_say_recs", _("Picks")),
+                critterSays("critter_say_quotes", _("Sayings")),
+            },
+            separator = true,
+        },
+        closeXMenu(),
+        homeMenu(),
+    })
+
+    -- Advanced
+    items[#items + 1] = group(_("Advanced"), {
+        cleanUpCacheItem(),
+        toggle("diagnostics", _("Diagnostics"),
+            _("For troubleshooting: writes what OrbitShelf does (shelf loads, covers, downloads, hero, timings) to crash.log, tagged \"orbitshelf diag\", for 30 minutes after each start or after turning it on. Turns itself off after 3 days. Problems go to crash.log either way. Off by default."),
+            function() if cfg.diagnostics then O.startDiag(true) end end),
+    })
+    -- 2.0.0: Help, last
+    items[#items + 1] = helpMenu()
     return items
+end
+
+-- What's New, once, the first time a BookOrbit shelf shows after the update (not on a
+-- new install: only when BookOrbit shelves were already on). 2.0.0: about 2.0, with the
+-- regrouped settings' current values (1.3.8's note)
+local WHATS_NEW_ID = "2.0.0"
+function O.whatsNew()
+    if cfg.whats_new_seen == WHATS_NEW_ID or not cfg.use_bookorbit then return end
+    cfg.whats_new_seen = WHATS_NEW_ID
+    saveConfig()
+    local hero = (cfg.hero_pills or cfg.hero_sync) and _("on") or _("off")
+    local close = not cfg.close_only_menu and _("Off") or (cfg.close_menu_side == "left" and _("Left")
+        or cfg.close_menu_side == "right" and _("Right") or _("Bookshelf's Side"))
+    local nxt = not cfg.next_in_series and _("Off") or (cfg.next_series_mode == "queue" and _("Add To Queue") or _("Ask"))
+    local text = _("OrbitShelf 2.0") .. "\n\n"
+        .. _("New: the Book Page (hold a book), the Queue (downloads and statuses wait for Wi-Fi), the Up Next shelf, status on covers, Remove Finished Books, and Help at the bottom of Tools › OrbitShelf.") .. "\n\n"
+        .. _("Tools › OrbitShelf now has Shelves, Books, Downloads, Look, Offline, Footer, Advanced and Help.") .. "\n\n"
+        .. _("Always there now: Add To Collection, Reading Status and Bulk Download / Remove (under More… in a book's menu, and on the Book Page).") .. "\n\n"
+        .. _("Single choices now, set from what you had:") .. "\n"
+        .. T(_("• Flash: %1"), FLASH_NAMES[flashLevel()]) .. "\n"
+        .. T(_("• Hero Buttons: %1"), hero) .. "\n"
+        .. T(_("• Close X: %1"), close) .. "\n"
+        .. T(_("• Home Button: %1"), cfg.home_button and _("on") or _("Off")) .. "\n"
+        .. T(_("• Next Book In Series: %1"), nxt) .. "\n\n"
+        .. _("Nothing you set was changed.")
+    UIManager:scheduleIn(1, function()
+        UIManager:show(require("ui/widget/infomessage"):new{ text = text })
+    end)
 end
 
 local function menuItem()

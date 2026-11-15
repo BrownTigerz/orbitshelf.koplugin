@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 1.2.26
+Version: 2.0.1
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,9 +62,9 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 1.2.26:". At start it writes the
-KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI versions and every
-patch and plugin present. When another patch or plugin changed a Bookshelf function
+Problems go to crash.log, tagged "orbitshelf 2.0.1:". With Diagnostics on, at start
+it also writes the KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI
+versions and every patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
 source, the line names that file. A part that fails writes its error and where it
 happened, once per start, and Bookshelf's own version runs instead.
@@ -83,9 +83,65 @@ download / remove), orbitshelf_genres.lua (background lookups), orbitshelf_sourc
 orbitshelf_footer.lua (critter, close X, Home button), orbitshelf_menu.lua (settings menu),
 orbitshelf_collections.lua (Add To Collection), orbitshelf_bulk.lua (Bulk Download / Remove),
 orbitshelf_extras.lua (Reading Status, Next In Series, Not On Device mark),
+orbitshelf_queue.lua (the Queue: downloads and statuses waiting for Wi-Fi),
+orbitshelf_bookpage.lua (the Book Page),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
+  2.0.1  2026-11-14  A reading status set with Wi-Fi off can be dropped before it's sent:
+                     Reading Status… (hero Status, the Book Page, a book's menu) starts
+                     with Don't Send <status> while one is waiting, and the covers go
+                     back to the status the book had. The hero's button says
+                     Status · Queued meanwhile. The BookOrbit · Queue shelf shows books
+                     waiting to download only (TK: a book stayed on it after Remove
+                     Queue because its status was still waiting). Clean-up: an unused
+                     return value removed.
+  2.0.0  2026-11-14  OrbitShelf 2.0 ("your library, ready offline"), built and tested as
+                     1.3.0-1.3.24 and 2.0.1-2.0.4 on a Kobo Clara Colour:
+                     * Book Page (hold a book, or Book Page in its menu): cover with its
+                       status, title (tap for all of it), author, series, status, progress
+                       and last read (this Kobo's history or BookOrbit's), finished date
+                       for a book finished here, pages / year / language / genres; the
+                       buttons beside the cover (full-width under it on a tall book);
+                       Bulk Download, Bulk Remove and Help in the top bar with where the
+                       book is and the free space; the description (tap to read it all);
+                       the series, more by the author, or similar books (BookOrbit's,
+                       else by genre) with status and On device / Queued on each cover.
+                       The page opens on the series (or More by); Similar › or a swipe
+                       left past it shows Similar books, ‹ or a swipe right goes back.
+                       Book Page is also in Bookshelf's book menu (and the file browser's)
+                       for a BookOrbit book on the device. Opens over Bookshelf, closes
+                       on sleep and when a book opens; BookOrbit opened from it comes
+                       back to it.
+                     * The Queue: with Wi-Fi off, downloads and reading statuses wait; the
+                       queue runs once 15 s after Wi-Fi connects (statuses first, books one
+                       at a time, 50 MB kept free) or Download Queue Now. A sent status
+                       sticks after a refresh. Clock mark on queued covers; BookOrbit ·
+                       Queue shelf. No timers, no polling; sleep pauses it.
+                     * Up Next shelf: the next book in every series you've started.
+                     * Covers show BookOrbit's reading status and progress (Bookshelf's own
+                       badges) for books not on the device.
+                     * Remove Finished Books (Downloads, Not Opened For) and a Finished Books
+                       select in Bulk Remove. Bulk Remove on every Book Page.
+                     * Hero: Status button for a quick Reading Status; Remove Queue on a
+                       queued book.
+                     * Settings regrouped: Shelves, Books, Downloads, Look, Offline, Footer,
+                       Advanced, Help. Always on: Add To Collection, Reading Status, Bulk
+                       Download / Remove (under More… in a book's menu). Single choices for
+                       Flash, Hero Buttons, Close X, Home Button, Next Book In Series (Off /
+                       Ask / Add To Queue), read from the 1.x settings: nothing you set is
+                       changed, and 1.2.x still loads them.
+                     * Help at the bottom of Tools › OrbitShelf (Getting Started … What's
+                       New, newest version first), each topic in a window sized to it;
+                       What's New pops up once after the update.
+                     * Bigger footer critter.
+                     * Waking to Simple UI's home (its Start With Home Screen) with
+                       Bookshelf left open closes Bookshelf under the home, so it no
+                       longer pops up by itself when Wi-Fi connects.
+                     * Fix: paging a series strip past the book shown jumped back to the
+                       books around it, so a long series' later books never showed.
+                     * Clean-up: the start-up environment lines (versions, patches,
+                       plugins) only with Diagnostics on; unused code removed.
   1.2.26 2026-11-11  Shelf > Mark Style for the Not On Device mark: Auto (the default)
                      draws it black on a light cover corner and white on a dark one, with
                      a thin outline in the other colour so it reads on a busy corner too;
@@ -307,6 +363,8 @@ require("orbitshelf_genres")
 require("orbitshelf_source")
 require("orbitshelf_bulk")
 require("orbitshelf_extras")
+require("orbitshelf_queue")
+require("orbitshelf_bookpage")
 require("orbitshelf_hero")
 require("orbitshelf_footer")
 require("orbitshelf_menu")
@@ -321,7 +379,7 @@ local function step(label, fn, ...)
 end
 
 local function boot()
-    O.environment()
+    if cfg.diagnostics then O.environment() end -- what it runs with, for the log
     if cfg.use_bookorbit and O.bookOrbitInstalled() then
         if not O.registerSource() then
             -- Bookshelf may not be ready yet
@@ -359,7 +417,7 @@ local function boot()
     step("close-only menu", O.hookCloseOnlyMenu)
     step("footer critter", O.hookFooterCritter)
     if cfg.home_button then step("Home button", O.hookHomeButton) end
-    if cfg.mark_not_on_device then step("Not On Device mark", O.Extras.hookNotOnDeviceMark) end
+    if cfg.mark_not_on_device or not O.Queue.isEmpty() then step("Not On Device mark", O.Extras.hookNotOnDeviceMark) end
     step("rewrite stock chips", O.applyAutoRewrite)
     O.arm()
     if cfg.diagnostics then step("diagnostics", O.startDiag) end
@@ -390,22 +448,73 @@ end
 -- Wi-Fi back: a paused Genres / Offline Library run carries on, new books are added
 function OrbitShelf:onNetworkConnected()
     step("Wi-Fi back", O.Genres.onWifi)
+    -- the Queue: once, a little after the connect (1.3.1)
+    step("queue", O.Queue.onWifi)
 end
 
 -- going to sleep: the background lookups stop (they carry on when Wi-Fi is back)
+-- 2.0.0: Simple UI's Start With Home Screen puts its home back on top after sleep,
+-- over a Bookshelf left open. Bookshelf closes any "homescreen" above it at the next
+-- Wi-Fi change (its _evictHomescreenOverlay), so the shelf popped up by itself once
+-- Wi-Fi connected. A second after waking (and after the sleep screen goes), if Simple
+-- UI's home sits over the shelf and no book is open, the shelf under it is closed.
+local wake_check
+local function closeShelfUnderHome()
+    wake_check = nil
+    local RUI = package.loaded["apps/reader/readerui"]
+    if RUI and RUI.instance then return end
+    if require("device").screen_saver_lock then return end -- OutOfScreenSaver checks again
+    local stack = UIManager._window_stack
+    if type(stack) ~= "table" then return end
+    local shelf
+    for _i, entry in ipairs(stack) do
+        local w = entry and entry.widget
+        if type(w) == "table" then
+            if w.name == "bookshelf" then
+                shelf = w
+            elseif shelf and w.covers_fullscreen and w.name == "homescreen" then
+                logger.info(TAG, "woke to Simple UI's home over Bookshelf: closing Bookshelf under it")
+                local ok = type(shelf.onClose) == "function" and pcall(shelf.onClose, shelf)
+                if not ok then UIManager:close(shelf) end
+                return
+            end
+        end
+    end
+end
+local function checkShelfAfterWake()
+    if wake_check then UIManager:unschedule(wake_check) end
+    wake_check = function() step("shelf under home after wake", closeShelfUnderHome) end
+    UIManager:scheduleIn(1, wake_check)
+end
+
 function OrbitShelf:onSuspend()
+    if wake_check then UIManager:unschedule(wake_check); wake_check = nil end
     if O.Genres.running then step("sleep", O.Genres.stop, true) end
     if O.Bulk.running() then step("bulk download pause", O.Bulk.pause) end
+    if O.Queue.running() then step("queue pause", O.Queue.pause) end
+    if O.BookPage and O.BookPage.isShown() then step("book page close", O.BookPage.close) end
     step("save lists", O.flushPageCache)
 end
+
+-- a book opening (1.3.14): the Book Page closes. Opened from BookOrbit's own "open
+-- now?" after a download it stayed under the book, and after Close Bookshelf it was
+-- left under the stock library. ShowingReader reaches the file browser's copy of the
+-- plugin, ReaderReady the book's; the page is shared, so either closes it.
+local function closeBookPage()
+    if O.BookPage and O.BookPage.isShown() then step("book page close (book opened)", O.BookPage.close) end
+end
+function OrbitShelf:onShowingReader() closeBookPage() end
+function OrbitShelf:onReaderReady() closeBookPage() end
 
 -- awake again: a Bulk Download paused by sleep asks whether to continue, once the
 -- sleep screen is gone (with "tap to exit" the screen stays until OutOfScreenSaver)
 function OrbitShelf:onResume()
+    checkShelfAfterWake()
     if O.Bulk.running() then step("bulk download resume", O.Bulk.offerResume) end
 end
 
 function OrbitShelf:onOutOfScreenSaver()
+    checkShelfAfterWake()
     if O.Bulk.running() then step("bulk download resume", O.Bulk.offerResume) end
     if O.Extras.hasPending() then step("next in series", O.Extras.offerNext) end
 end

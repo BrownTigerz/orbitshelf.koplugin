@@ -53,11 +53,33 @@ local function heroActionsFor(book)
             text = _("Remove From Device"),
             callback = function() removeFromDevice(book) end,
         }
+    elseif O.Queue and O.Queue.has(book) then
+        -- 1.3.1: in the Queue; a tap takes it out (1.3.3: "Remove Queue", was "Queued")
+        actions[#actions + 1] = {
+            text = _("Remove Queue"),
+            callback = function() O.Queue.removeDownload(tonumber(book.bookorbit_id)) end,
+        }
+    elseif O.Queue and not isWifiOn() then
+        -- 1.3.1: Wi-Fi off, Download becomes Queue (it downloads on the next connect)
+        actions[#actions + 1] = {
+            text = _("Queue"),
+            callback = function() O.Queue.addDownload(book) end,
+        }
     else
         actions[#actions + 1] = {
             text = _("Download"),
             needs_wifi = true,
             callback = function() downloadBookOrbitBook(book) end,
+        }
+    end
+    -- 1.3.11: Status, for a quick Reading Status change (queued with Wi-Fi off)
+    local sid = tonumber(book.bookorbit_id)
+    if sid and O.pickReadStatus then
+        actions[#actions + 1] = {
+            -- 2.0.1: says when a status is waiting for Wi-Fi (Don't Send is in its menu)
+            text = (O.Queue and O.Queue.statusOf and O.Queue.statusOf(sid)) and _("Status · Queued") or _("Status"),
+            pill_only = true, -- the hold menu has Reading Status… under More…
+            callback = function() O.pickReadStatus(sid, book.display_title or book.title) end,
         }
     end
     actions[#actions + 1] = {
@@ -350,10 +372,12 @@ local function hookHero()
                 local dlg
                 local rows = {}
                 for _i, a in ipairs(extra) do
-                    rows[#rows + 1] = {{ text = a.text, callback = function()
-                        UIManager:close(dlg)
-                        a.callback()
-                    end }}
+                    if not a.pill_only then
+                        rows[#rows + 1] = {{ text = a.text, callback = function()
+                            UIManager:close(dlg)
+                            a.callback()
+                        end }}
+                    end
                 end
                 -- a book not on the device: its description too
                 if not bookOnDevice(book) then
@@ -362,17 +386,16 @@ local function hookHero()
                         O.showDescription(book)
                     end }}
                 end
-                if O.canAddToCollection(book) then
-                    rows[#rows + 1] = {{ text = _("Add To Collection"), callback = function()
+                -- 1.3.8: Add To Collection, Reading Status…, Bulk… under one More… row
+                local function closeDlg() UIManager:close(dlg) end
+                if not bookOnDevice(book) and O.BookPage then
+                    rows[#rows + 1] = {{ text = _("Book Page"), callback = function()
                         UIManager:close(dlg)
-                        O.addToCollection(book)
+                        O.BookPage.show(book)
                     end }}
                 end
-                local function closeDlg() UIManager:close(dlg) end
-                local status = O.readStatusRow(book, closeDlg)
-                if status then rows[#rows + 1] = { status } end
-                local bulk = O.Bulk.row(book, nil, closeDlg) or O.Bulk.removeRow(book, nil, closeDlg)
-                if bulk then rows[#rows + 1] = { bulk } end
+                local more = O.moreRow(book, nil, closeDlg)
+                if more then rows[#rows + 1] = { more } end
                 rows[#rows + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }}
                 dlg = ButtonDialog:new{ title = book.title or _("Book"), buttons = rows }
                 UIManager:show(dlg)

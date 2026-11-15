@@ -636,11 +636,14 @@ local function buildFooterCritter(bw, max_w, h)
         if not path then return end
         -- SimpleUI scales a big critter image to exactly the box it is given, so the
         -- box keeps the image's own shape (a wide box stretched the critter)
-        local box_w = math.floor(max_w * 0.22)
+        -- 1.3.12: the critter takes the bar's whole height (the text keeps its padding),
+        -- a little bigger and easier to see (TK)
+        local crit_h = math.max(inner_h, cap_h - Screen:scaleBySize(1))
+        local box_w = math.floor(max_w * 0.26)
         local aspect = critterAspect(path)
-        if aspect then box_w = math.min(box_w, math.max(1, math.floor(inner_h * aspect + 0.5))) end
+        if aspect then box_w = math.min(box_w, math.max(1, math.floor(crit_h * aspect + 0.5))) end
         -- shadow: SimpleUI 3.0.3's ground shadow, like the home screen critter (older builds ignore it)
-        local sp = Sprite:new{ path = path, max_w = box_w, max_h = inner_h, shadow = true }
+        local sp = Sprite:new{ path = path, max_w = box_w, max_h = crit_h, shadow = true }
         if sp.dimen and sp.dimen.w > 0 then sprite = sp end
     end)
 
@@ -810,7 +813,6 @@ local function hookFooterCritter()
             row,
         }
     end
-    logger.info(TAG, "footer critter hooked")
 end
 
 

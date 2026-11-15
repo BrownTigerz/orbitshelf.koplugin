@@ -360,6 +360,8 @@ local MODE_NAMES = {
     collection = _("Collection"),
     smart_scope = _("Smart Scope"),
     bo_library = _("Library"),
+    queue = _("Queue"),
+    up_next = _("Up Next"),
 }
 
 local function autoName(src)
@@ -456,6 +458,128 @@ local function setPickMode(draft, mode, label)
     end)
 end
 
+-- 1.3.1: the Queue shelf: queued books in queue order (from the saved library list,
+-- no network of its own). 2.0.1: downloads only; a status waiting to be sent shows
+-- on the book's covers and in Tools › OrbitShelf › Downloads (TK: a book stayed on the
+-- shelf after Remove Queue because its status was still waiting)
+local function queueItems()
+    local Q = O.Queue
+    if not Q then return {} end
+    Q.prune()
+    local lib = fetchBoPage({ sort = "title" }, false) or {}
+    local by = {}
+    for _i, r in ipairs(lib) do
+        local id = type(r) == "table" and tonumber(r.bookorbit_id)
+        if id then by[id] = r end
+    end
+    local out, seen = {}, {}
+    local downloads = Q.entries()
+    for _i, e in ipairs(downloads) do
+        if by[e.id] and not seen[e.id] then out[#out + 1] = by[e.id] seen[e.id] = true end
+    end
+    return out
+end
+
+-- 1.3.17: the Up Next shelf: for every series you've started, the book after the
+-- furthest one you've read or are reading. Started = Read / Skimmed / Reading /
+-- Rereading in BookOrbit (or waiting in the Queue), or KOReader's own status for a
+-- book on this Kobo, or opened on this Kobo (its history). A series with a book
+-- missing its number, or two books with the same number, is skipped (never guessed).
+-- Most recently read series first. From the saved library list: no network.
+local UPNEXT_DONE = { read = true, skimmed = true, reading = true, rereading = true }
+local KO_DONE = { complete = true, reading = true }
+local upnext_memo -- { lib = <list>, gen = <queue/device key>, t = os.time(), items = {} }
+
+local function upNextItems()
+    local lib = fetchBoPage({ sort = "title" }, false) or {}
+    local Q = O.Queue
+    local on_device = O.onDeviceIdSet and O.onDeviceIdSet() or {}
+    -- what changes the answer without changing the list: the queue and the device
+    local gen = tostring(Q and Q.count and Q.count() or 0)
+    for id in pairs(on_device) do gen = gen .. "," .. tostring(id) end
+    -- kept a few seconds only: one shelf draw asks more than once, and a status
+    -- changed in place on the same list must show on the next look
+    if upnext_memo and upnext_memo.lib == lib and upnext_memo.gen == gen
+            and os.time() - upnext_memo.t < 5 then
+        return upnext_memo.items
+    end
+    -- books opened on this Kobo: newest first, so their place is a "last read" time
+    local opened = {}
+    local RH = package.loaded["readhistory"]
+    if RH and type(RH.hist) == "table" and O.bookIdForPath then
+        for i, h in ipairs(RH.hist) do
+            local id = type(h) == "table" and h.file and tonumber(O.bookIdForPath(h.file))
+            if id and not opened[id] then opened[id] = tonumber(h.time) or (os.time() - i) end
+        end
+    end
+    local function koStatus(id)
+        if not on_device[id] then return nil end
+        local path = O.liveBookPath and O.liveBookPath(id)
+        if not path then return nil end
+        local st
+        pcall(function()
+            local DocSettings = require("docsettings")
+            if DocSettings.hasSidecarFile and not DocSettings:hasSidecarFile(path) then return end
+            local summary = DocSettings:open(path):readSetting("summary")
+            st = type(summary) == "table" and summary.status or nil
+        end)
+        return st
+    end
+    -- series -> its books
+    local by_series = {}
+    for _i, r in ipairs(lib) do
+        local name = type(r) == "table" and type(r.series) == "string" and r.series ~= "" and r.series
+        if name and tonumber(r.bookorbit_id) then
+            local key = name:lower()
+            by_series[key] = by_series[key] or {}
+            table.insert(by_series[key], r)
+        end
+    end
+    local picks = {}
+    for _key, books in pairs(by_series) do
+        local ok, seen = true, {}
+        for _i, r in ipairs(books) do
+            local n = tonumber(r.series_index)
+            if not n or seen[n] then ok = false break end
+            seen[n] = true
+        end
+        if ok and #books > 1 then
+            table.sort(books, function(a, b) return tonumber(a.series_index) < tonumber(b.series_index) end)
+            local furthest, last_t = nil, 0
+            for i, r in ipairs(books) do
+                local id = tonumber(r.bookorbit_id)
+                local bo = (Q and Q.statusOf and Q.statusOf(id)) or r.bookorbit_status
+                local started = UPNEXT_DONE[bo or ""] or opened[id] ~= nil
+                if not started then
+                    local ks = koStatus(id)
+                    started = ks ~= nil and KO_DONE[ks] or false
+                end
+                if started then
+                    furthest = i
+                    last_t = math.max(last_t, tonumber(r.last_read_time) or 0, opened[id] or 0)
+                end
+            end
+            local nxt = furthest and books[furthest + 1]
+            if nxt then
+                local nid = tonumber(nxt.bookorbit_id)
+                local nbo = (Q and Q.statusOf and Q.statusOf(nid)) or nxt.bookorbit_status
+                -- already finished out of order: nothing to suggest for this series
+                if not (nbo == "read" or nbo == "skimmed" or koStatus(nid) == "complete") then
+                    picks[#picks + 1] = { r = nxt, t = last_t }
+                end
+            end
+        end
+    end
+    table.sort(picks, function(a, b)
+        if a.t ~= b.t then return a.t > b.t end
+        return tostring(a.r.series) < tostring(b.r.series)
+    end)
+    local items = {}
+    for i, p in ipairs(picks) do items[i] = p.r end
+    upnext_memo = { lib = lib, gen = gen, t = os.time(), items = items }
+    return items
+end
+
 local function buildSpec()
     return {
         api = 1,
@@ -493,6 +617,8 @@ local function buildSpec()
                 choose("series", _("BookOrbit · Series")),
                 choose("authors", _("BookOrbit · Authors")),
                 choose("genres", _("BookOrbit · Genres")),
+                choose("queue", _("BookOrbit · Queue")),
+                choose("up_next", _("BookOrbit · Up Next")),
                 {{
                     text = _("Cancel"),
                     callback = function()
@@ -544,6 +670,7 @@ local function buildSpec()
         -- fetch mode: folders for series/authors/genres, flat lists otherwise
         fetch = function(source, drill, offset, limit)
             pcall(O.checkHooks)
+            if O.whatsNew then pcall(O.whatsNew) end
             local mode = type(source) == "table" and source.mode or "library"
             if mode == "collection" and not (type(source) == "table" and source.collection_id) then
                 logger.warn(TAG, "collection shelf has no collection id; edit the shelf and pick the collection again")
@@ -585,6 +712,12 @@ local function buildSpec()
                 end
                 return keep(source, drill, folders, offset, limit)
             end
+            if mode == "queue" then
+                return keep(source, drill, queueItems(), offset, limit)
+            end
+            if mode == "up_next" then
+                return keep(source, drill, upNextItems(), offset, limit)
+            end
             local items = fetchBoPage(modeParams(source), false) or {}
             return keep(source, drill, items, offset, limit)
         end,
@@ -616,7 +749,8 @@ local function buildSpec()
             return true
         end,
 
-        -- long-press on a book that is not on the device
+        -- long-press on a book that is not on the device: the quick menu, or with
+        -- Hold A Book Opens: Book Page (1.3.3), the Book Page
         info = function(book, ctx)
             if not book or book.is_folder then return false end
             local live = liveBookPath(book.bookorbit_id)
@@ -624,6 +758,7 @@ local function buildSpec()
                 if ctx and type(ctx.open) == "function" then ctx.open(live) end
                 return true
             end
+            if cfg.hold_opens == "page" and O.BookPage and O.BookPage.show(book, ctx) then return true end
             showNotOnDevice(book, ctx)
             return true
         end,
@@ -939,7 +1074,6 @@ local function registerSource(ui)
     end
     O.spec = spec
     O.source_via = Sources and "Bookshelf's source list" or "Bookshelf"
-    logger.info(TAG, "BookOrbit source registered (fetch mode)")
     pcall(applyAutoRewrite)
     return true
 end

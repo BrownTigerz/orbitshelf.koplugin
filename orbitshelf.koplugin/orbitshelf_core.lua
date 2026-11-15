@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "1.2.26"
+local VERSION = "2.0.1"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -59,11 +59,15 @@ local DEFAULTS = {
     offline_library = false,       -- keep every book's details and cover on the device
     diagnostics = false,           -- write what OrbitShelf does to crash.log
     search_bookorbit = false,      -- Bookshelf's search looks in BookOrbit instead of the device
+    finished_days = 30,            -- Remove Finished Books: not opened here for this many days (0 = any time)
     offline_update = "wifi",       -- Offline Library checks for new books: "wifi" | "refresh" | "both" | "manual"
     mark_not_on_device = false,    -- download mark, bottom-left, on BookOrbit covers not on the device
     mark_style = "auto",           -- the mark: "auto" (black or white by the cover) | "badge" (on a round disc)
     home_button = false,           -- footer: Home button opposite the close X / hamburger
     home_target = false,           -- Home goes to: false = page 1 of this shelf; a shelf id = that shelf's page 1
+    hold_opens = "menu",           -- holding a BookOrbit book not on the device: "menu" (quick menu) | "page" (Book Page)
+    next_series_mode = "ask",      -- with next_in_series on: "ask" (a question back home) | "queue" (into the Queue)
+    whats_new_seen = false,        -- the last version whose What's New note was shown
 }
 
 -- What the patch (up to 1.6.1) had on by default. Someone who used the patch but never

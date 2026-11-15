@@ -3,7 +3,7 @@
 -- Download… or Bulk Remove…, tick books from that shelf. Downloads go one at a time
 -- after a size and space check; removals all at once after one question.
 local O = require("orbitshelf_core")
-local T, UIManager, _, cfg = O.T, O.UIManager, O._, O.cfg
+local T, UIManager, _ = O.T, O.UIManager, O._
 
 local Bulk = {}
 O.Bulk = Bulk
@@ -321,6 +321,9 @@ local function freeBytes()
     return type(du) == "table" and du.available or nil
 end
 
+O.mb = mb
+O.freeBytes = freeBytes
+
 -- the selected books' sizes, looked up in the worker: BookOrbit's bulk manifest
 -- answers up to 100 books a call (129 books = 2 calls). A server without it: one
 -- detail call a book, only for up to 25 books (more just goes without a size).
@@ -484,32 +487,60 @@ local function showChecklist(book, widget, mode)
         refresh()
     end
 
+    -- 1.3.15: finished = KOReader's own status on this Kobo (finished), else
+    -- BookOrbit's (Read / Skimmed); read once per window
+    local finished_of = {}
+    local function isFinished(rec)
+        local id = idOf(rec)
+        if id == nil then return false end
+        if finished_of[id] == nil then
+            local yes = false
+            local path = O.liveBookPath and O.liveBookPath(id)
+            local st
+            if path then
+                pcall(function()
+                    local DocSettings = require("docsettings")
+                    if DocSettings.hasSidecarFile and not DocSettings:hasSidecarFile(path) then return end
+                    local summary = DocSettings:open(path):readSetting("summary")
+                    st = type(summary) == "table" and summary.status or nil
+                end)
+            end
+            if st == "complete" then yes = true
+            elseif st == nil or st == "" or st == "new" then
+                local bo = rec.bookorbit_status
+                yes = bo == "read" or bo == "skimmed"
+            end
+            finished_of[id] = yes
+        end
+        return finished_of[id]
+    end
+
     local function selectMenu()
         local ButtonDialog = require("ui/widget/buttondialog")
         local s, a = seriesOf(book), firstAuthor(book)
         local dlg
-        dlg = ButtonDialog:new{
-            title = _("Select"),
-            buttons = {
-                {{ text = _("All"), callback = function()
-                    UIManager:close(dlg)
-                    selectBy(function() return true end)
-                end }},
-                {{ text = _("Same Series"), enabled = s ~= nil, callback = function()
-                    UIManager:close(dlg)
-                    selectBy(function(r) return seriesOf(r) == s end)
-                end }},
-                {{ text = _("Same Author"), enabled = a ~= nil, callback = function()
-                    UIManager:close(dlg)
-                    selectBy(function(r) return firstAuthor(r) == a end)
-                end }},
-                {{ text = _("None"), callback = function()
-                    UIManager:close(dlg)
-                    selectBy(function() return false end)
-                end }},
-                {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }},
-            },
+        local function pick(fn)
+            return function()
+                UIManager:close(dlg)
+                selectBy(fn)
+            end
+        end
+        local buttons = {
+            {{ text = _("All"), callback = pick(function() return true end) }},
         }
+        -- 1.3.15 (TK): Bulk Remove can tick just the finished books
+        if removing then
+            local n = 0
+            for i = 1, #cands do if isFinished(cands[i]) then n = n + 1 end end
+            buttons[#buttons + 1] = {{ text = T(_("Finished Books (%1)"), n), enabled = n > 0, callback = pick(isFinished) }}
+        end
+        buttons[#buttons + 1] = {{ text = _("Same Series"), enabled = s ~= nil,
+            callback = pick(function(r) return seriesOf(r) == s end) }}
+        buttons[#buttons + 1] = {{ text = _("Same Author"), enabled = a ~= nil,
+            callback = pick(function(r) return firstAuthor(r) == a end) }}
+        buttons[#buttons + 1] = {{ text = _("None"), callback = pick(function() return false end) }}
+        buttons[#buttons + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }}
+        dlg = ButtonDialog:new{ title = _("Select"), buttons = buttons }
         UIManager:show(dlg)
     end
 
@@ -610,15 +641,16 @@ end
 
 -- Bulk Download… for a book that isn't on the device, dimmed with Wi-Fi off; Stop Bulk
 -- Download while one is running.
-function Bulk.row(book, widget, close)
-    if not cfg.bulk_download then return nil end
+-- always (1.3.14, the Book Page): offered whether or not this book is on the device
+-- (the window lists the shelf's books that aren't)
+function Bulk.row(book, widget, close, always)
     if job then
         return { text = T(_("Stop Bulk Download (%1 of %2)"), math.max(job.i, 1), #job.list), callback = function()
             if close then close() end
             Bulk.stop()
         end }
     end
-    if not idOf(book) or onDevice(book) then return nil end
+    if not idOf(book) or (onDevice(book) and not always) then return nil end
     return { text = _("Bulk Download…"), enabled = O.isWifiOn() and true or false, callback = function()
         if close then close() end
         open(book, widget, "download")
@@ -626,9 +658,10 @@ function Bulk.row(book, widget, close)
 end
 
 -- Bulk Remove… for a BookOrbit book that is on the device
-function Bulk.removeRow(book, widget, close)
-    if not cfg.bulk_remove then return nil end
-    if not idOf(book) or not onDevice(book) then return nil end
+-- always (1.3.14, the Book Page): offered for a book not on the device too, so the
+-- shelf's other books can be removed from its page (TK)
+function Bulk.removeRow(book, widget, close, always)
+    if not idOf(book) or (not onDevice(book) and not always) then return nil end
     return { text = _("Bulk Remove…"), callback = function()
         if close then close() end
         open(book, widget, "remove")
