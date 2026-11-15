@@ -76,6 +76,26 @@ Downloaded — open it now or later.
 
 A book on the device gets small Remove, Open In BookOrbit, and Sync icons instead.
 
+![Book Page — Series](images/orbitshelf-book-page-series.png)
+
+The Book Page: cover, status, progress and description, with the series below — Codex Alera, 0 of 6 read. Swipe left past it for Similar books.
+
+![Book Page — Similar books](images/orbitshelf-book-page-similar.png)
+
+Similar books on the Book Page — BookOrbit's picks, or by genre when it has none. Each cover shows its status and On device / Queued.
+
+![Book Page — Download](images/orbitshelf-book-page-download.png)
+
+The Book Page for a book not on the device: Download, Reading Status, Collection, BookOrbit. With Wi-Fi off the button reads Queue and the download waits.
+
+![Up Next](images/orbitshelf-up-next.png)
+
+Up Next: the next book in every series you've started — Academ's Fury (#2) and The Wicked King (#2) here.
+
+![Queue](images/orbitshelf-queue.png)
+
+The Queue shelf: books waiting to download, clock-marked, with their place in the series.
+
 ---
 
 ## Install
