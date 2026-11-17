@@ -235,14 +235,30 @@ local function loginStore()
     return require("luasettings"):open(require("datastorage"):getSettingsDir() .. "/" .. LOGIN_FILE)
 end
 
+-- One storage key per server: strip trailing slash so Set API Key and
+-- Add To Collection share the same entry.
+local function normalizeServer(server)
+    if type(server) ~= "string" or server == "" then return nil end
+    server = server:match("^%s*(.-)%s*$") or server
+    server = server:gsub("/+$", "")
+    return server ~= "" and server or nil
+end
+
 -- server_url -> raw API key (in memory only after load)
 local key_cache = {}
 
 local function forgetKey(server)
     if server then
+        server = normalizeServer(server) or server
         key_cache[server] = nil
+        key_cache[server .. "/"] = nil
         local s = loginStore()
         s:delSetting(server)
+        s:delSetting(server .. "/")
+        -- also drop any key whose normalized form matches
+        for k in pairs(s.data or {}) do
+            if normalizeServer(k) == server then s:delSetting(k) end
+        end
         s:flush()
     else
         key_cache = {}
@@ -253,7 +269,8 @@ local function forgetKey(server)
 end
 
 local function saveKey(server, key)
-    if type(server) ~= "string" or type(key) ~= "string" or key == "" then return false end
+    server = normalizeServer(server)
+    if not server or type(key) ~= "string" or key == "" then return false end
     key = key:match("^%s*(.-)%s*$") or key
     if not key:match("^bok_") then
         -- still accept it; the server will reject if wrong
@@ -275,9 +292,20 @@ local function saveKey(server, key)
 end
 
 local function loadKey(server)
+    server = normalizeServer(server)
     if not server then return nil end
     if key_cache[server] then return key_cache[server] end
     local saved = loginStore():readSetting(server)
+    -- fallback: same URL with/without trailing slash written by an older build
+    if type(saved) ~= "table" then
+        local alt = loginStore():readSetting(server .. "/")
+        if type(alt) == "table" then saved = alt end
+    end
+    if type(saved) ~= "table" then
+        for k, v in pairs(loginStore().data or {}) do
+            if normalizeServer(k) == server and type(v) == "table" then saved = v break end
+        end
+    end
     if type(saved) ~= "table" then return nil end
     local key
     if type(saved.key_enc) == "string" then
@@ -319,12 +347,25 @@ local function tryImportPlainKey(server)
 end
 
 local function getApiKey(server, force_ask)
+    server = normalizeServer(server)
     if not server then return nil end
     if not force_ask then
         local k = loadKey(server)
         if k then return k end
         k = tryImportPlainKey(server)
         if k then return k end
+        -- single saved key on device: reuse it (common when Set API Key and
+        -- the catalog client disagree slightly on the URL string)
+        local s = loginStore()
+        local found, n = nil, 0
+        for srv in pairs(s.data or {}) do
+            local kk = loadKey(srv)
+            if kk then n = n + 1 found = kk end
+        end
+        if n == 1 and found then
+            key_cache[server] = found
+            return found
+        end
     end
     return nil
 end
