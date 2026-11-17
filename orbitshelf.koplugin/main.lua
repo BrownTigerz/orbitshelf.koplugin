@@ -2,7 +2,7 @@
 orbitshelf.koplugin  ·  OrbitShelf
 BookOrbit shelves inside Bookshelf (AndyHazz/bookshelf.koplugin).
 
-Version: 2.0.1
+Version: 2.0.2
 
 Requires:
   * bookshelf.koplugin (SOURCE_API >= 1; best with Bookshelf 6.x)
@@ -62,7 +62,7 @@ Settings: Tools → OrbitShelf (or Add-ons with 2-tweaks-menu.lua):
   Use BookOrbit In Bookshelf, Rewrite Stock Series / Authors / Genres, then
   Hero, Shelf, Offline Library and Footer sub-menus, and Clean Up Cache at the end.
 
-Problems go to crash.log, tagged "orbitshelf 2.0.1:". With Diagnostics on, at start
+Problems go to crash.log, tagged "orbitshelf 2.0.2:". With Diagnostics on, at start
 it also writes the KOReader version, the device, the Bookshelf / BookOrbit / SimpleUI
 versions and every patch and plugin present. When another patch or plugin changed a Bookshelf function
 OrbitShelf hooks (hero, close X, footer, flash), or replaced the BookOrbit shelf
@@ -88,7 +88,7 @@ orbitshelf_bookpage.lua (the Book Page),
 orbitshelf_diag.lua (Diagnostics, loaded only while it's on).
 
 Changelog:
-  2.0.1  2026-11-14  A reading status set with Wi-Fi off can be dropped before it's sent:
+  2.0.2  2026-11-14  A reading status set with Wi-Fi off can be dropped before it's sent:
                      Reading Status… (hero Status, the Book Page, a book's menu) starts
                      with Don't Send <status> while one is waiting, and the covers go
                      back to the status the book had. The hero's button says
@@ -97,7 +97,7 @@ Changelog:
                      Queue because its status was still waiting). Clean-up: an unused
                      return value removed.
   2.0.0  2026-11-14  OrbitShelf 2.0 ("your library, ready offline"), built and tested as
-                     1.3.0-1.3.24 and 2.0.1-2.0.4 on a Kobo Clara Colour:
+                     1.3.0-1.3.24 and 2.0.2-2.0.4 on a Kobo Clara Colour:
                      * Book Page (hold a book, or Book Page in its menu): cover with its
                        status, title (tap for all of it), author, series, status, progress
                        and last read (this Kobo's history or BookOrbit's), finished date

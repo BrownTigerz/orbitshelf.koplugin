@@ -637,17 +637,46 @@ local function menuItems()
         },
         nextSeriesMenu(),
         {
-            text = _("BookOrbit Sign-In"),
-            help_text = _("Add To Collection signs in like the web app, with your BookOrbit password (saved on this device, encrypted). With BookOrbit Tweaks installed it uses that patch's sign-in; the saved password is shared either way."),
+            text_func = function()
+                if O.Collections and O.Collections.hasSaved and O.Collections.hasSaved() then
+                    return _("BookOrbit Sign-In · API key active")
+                end
+                return _("BookOrbit Sign-In")
+            end,
+            help_text = _("Add To Collection uses a BookOrbit API key (Settings > You > API keys on the website, Read and write). The key is saved on this device encrypted. Easiest entry: Create API Key File, paste over USB, then Add To Collection or Set API Key… — the temp file is deleted. Shared with BookOrbit Tweaks when both are installed."),
             sub_item_table = {
                 {
-                    text = _("Forget Saved BookOrbit Password"),
-                    help_text = _("The password Add To Collection saved on this device (encrypted). You'll be asked again next time."),
+                    text = _("Create API Key File"),
+                    help_text = _("Writes koreader/orbitshelf_api_key.txt (over USB). Paste your bok_ key on the marked line, then use Add To Collection or Set API Key… — the file is imported and deleted."),
+                    callback = function()
+                        if O.Collections and O.Collections.writeTempKeyFile then
+                            O.Collections.writeTempKeyFile()
+                        end
+                    end,
+                },
+                {
+                    text_func = function()
+                        if O.Collections and O.Collections.hasSaved and O.Collections.hasSaved() then
+                            return _("API Key Active")
+                        end
+                        return _("Set API Key…")
+                    end,
+                    help_text = _("When a key is saved: shows active. To change it, Forget first. When none: paste or type, or use Create API Key File over USB."),
+                    callback = function()
+                        if O.Collections and O.Collections.setKey then
+                            local client = O.boApiClient and O.boApiClient()
+                            O.Collections.setKey(client)
+                        end
+                    end,
+                },
+                {
+                    text = _("Forget Saved API Key"),
+                    help_text = _("Removes the API key from this device (encrypted). Shared with BookOrbit Tweaks. After this, Create API Key File or Set API Key… again."),
                     enabled_func = function() return O.Collections ~= nil and O.Collections.hasSaved() end,
                     callback = function() O.Collections.forget() end,
                 },
                 {
-                    text = _("About The Saved Password"),
+                    text = _("About The API Key"),
                     keep_menu_open = true,
                     callback = function() O.Collections.about() end,
                 },
@@ -664,8 +693,41 @@ local function menuItems()
             sub_item_table_func = function()
                 local sub = q.sub_item_table_func()
                 table.insert(sub, 1, { text_func = q.text_func, enabled_func = function() return false end })
+                -- Book Type: how a read-along EPUB (with narration) downloads
+                local ra_names = {
+                    text = _("Text Only"), narration = _("With Narration"),
+                    both = _("Both"), bookorbit = _("Same As BookOrbit"),
+                }
+                table.insert(sub, 2, {
+                    text_func = function()
+                        return T(_("Book Type: %1"), ra_names[cfg.readalong_download] or ra_names.text)
+                    end,
+                    help_text = _([[Which kind of file a read-along book (an EPUB with the book's narration in it) downloads as. BookOrbit sends it without the narration unless asked.
+
+Text Only: the book without the narration, small (what OrbitShelf has always done).
+With Narration: the book with its audio. Much bigger; KOReader itself doesn't play it — for an app that plays EPUB narration.
+Both: the text-only copy, plus one with narration beside it named "… - With Narration". Removing the book removes both.
+Same As BookOrbit: whatever this device is set to under BookOrbit's own EPUB delivery.
+
+A book without narration downloads as the regular EPUB. Applies to Book Page, hero, Bulk Download and the Queue.]]),
+                    sub_item_table_func = function()
+                        local out = {}
+                        for _i, k in ipairs({ "text", "narration", "both", "bookorbit" }) do
+                            out[#out + 1] = {
+                                text = ra_names[k],
+                                radio = true,
+                                checked_func = function() return (cfg.readalong_download or "text") == k end,
+                                callback = function()
+                                    cfg.readalong_download = k
+                                    O.saveConfig()
+                                end,
+                            }
+                        end
+                        return out
+                    end,
+                })
                 -- 1.3.24: Remove Finished Books
-                local at = 2
+                local at = 3
                 table.insert(sub, at, {
                     text = _("Remove Finished Books…"),
                     help_text = _("Removes the BookOrbit books on this device that are finished (KOReader's own status, or Read / Skimmed in BookOrbit) and that you haven't opened here for the time below. It lists them and asks first. They stay in BookOrbit."),

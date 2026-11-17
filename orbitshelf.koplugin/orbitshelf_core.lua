@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "2.0.1"
+local VERSION = "2.0.2"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -60,6 +60,7 @@ local DEFAULTS = {
     diagnostics = false,           -- write what OrbitShelf does to crash.log
     search_bookorbit = false,      -- Bookshelf's search looks in BookOrbit instead of the device
     finished_days = 30,            -- Remove Finished Books: not opened here for this many days (0 = any time)
+    readalong_download = "text",   -- a read-along EPUB: "text" | "narration" | "both" | "bookorbit"
     offline_update = "wifi",       -- Offline Library checks for new books: "wifi" | "refresh" | "both" | "manual"
     mark_not_on_device = false,    -- download mark, bottom-left, on BookOrbit covers not on the device
     mark_style = "auto",           -- the mark: "auto" (black or white by the cover) | "badge" (on a round disc)

@@ -917,6 +917,27 @@ local function retargetHeroPreview(id, local_path)
     end)
 end
 
+
+-- Book Type › Both keeps a second copy, with the narration; its path
+-- per book, so Remove From Device / Bulk Remove take it too
+local function rememberNarratedCopy(book_id, path)
+    if not G_reader_settings or not book_id or not path then return end
+    local m = G_reader_settings:readSetting("orbitshelf_narrated_copies")
+    if type(m) ~= "table" then m = {} end
+    m[tostring(book_id)] = path
+    G_reader_settings:saveSetting("orbitshelf_narrated_copies", m)
+end
+
+local function takeNarratedCopy(book_id)
+    if not G_reader_settings or not book_id then return nil end
+    local m = G_reader_settings:readSetting("orbitshelf_narrated_copies")
+    if type(m) ~= "table" or not m[tostring(book_id)] then return nil end
+    local path = m[tostring(book_id)]
+    m[tostring(book_id)] = nil
+    G_reader_settings:saveSetting("orbitshelf_narrated_copies", m)
+    return path
+end
+
 -- books being downloaded right now (a second tap doesn't start another)
 local downloading = {}
 
@@ -958,7 +979,7 @@ local function downloadBookOrbitBook(book, on_done, opts)
     -- BookOrbit's pages, over Bookshelf's footer, and the download ran on the screen's
     -- thread, so the pill and the shelf glitched while it ran.)
     local function run()
-        if O.inFlight(downloading, id, 600) then
+        if O.inFlight(downloading, id, (cfg.readalong_download or "text") == "text" and 600 or 1800) then
             if opts.on_fail then pcall(opts.on_fail, _("Already downloading")) end
             return
         end
@@ -1005,66 +1026,130 @@ local function downloadBookOrbitBook(book, on_done, opts)
             O.Genres.note(label .. " " .. pct .. "%")
         end
 
+        -- 2.0.2: which form of a read-along EPUB (Downloads › Book Type)
+        local mode = cfg.readalong_download or "text"
         O.runWorker(client, function()
             -- in the worker: everything that waits on the network or the disk
-            local detail = client:catalogBook(id)
-            if type(detail) ~= "table" then return { err = "details" } end
-            local file = pickFile(detail)
-            if not file then return { err = "nofile" } end
             local util = require("util")
-            -- the Queue (1.3.1): enough room for this book? (50 MB kept free)
-            if opts.check_space then
-                local size = tonumber(file.sizeBytes)
-                local du = util.diskUsage and util.diskUsage(root)
-                local free = type(du) == "table" and tonumber(du.available) or nil
-                if size and free and size + 50 * 1024 * 1024 > free then
-                    return { err = "space", need = size, free = free }
+            -- one file: variant nil = the server's plain delivery (a read-along EPUB
+            -- comes text only); "original" = with its narration. suffix: added to the
+            -- file name (Both keeps the two copies apart).
+            -- require_narration: fail with no_narration before writing a file when the
+            -- book has no media-overlay / read-along (Book Type › With Narration).
+            local function getOne(variant, suffix, require_narration)
+                local detail = client:catalogBook(id, variant)
+                if type(detail) ~= "table" then return { err = "details" } end
+                local file = pickFile(detail)
+                if not file then return { err = "nofile" } end
+                local has_narration = file.sourceMediaOverlayAvailable == true
+                if require_narration and not has_narration then
+                    return { err = "no_narration" }
                 end
-            end
-            -- the server's folder layout under the download folder
-            local rel
-            local dp = tostring(file.devicePath or ""):gsub("\\", "/"):gsub("^/+", "")
-            if dp ~= "" then
-                local segs, bad = {}, false
-                for seg in dp:gmatch("[^/]+") do
-                    if seg == ".." then bad = true break end
-                    if seg ~= "." then segs[#segs + 1] = util.getSafeFilename(seg, root) end
+                -- asked for the narration, but the server sent the text only: a BookOrbit
+                -- server from before read-along variants
+                if variant == "original" and has_narration
+                    and file.downloadVariant ~= "original" then
+                    return { err = "variant" }
                 end
-                if not bad and #segs > 0 then rel = table.concat(segs, "/") end
-            end
-            if not rel then
-                local okC, CU = pcall(require, "bookorbit_catalog_util")
-                local base = okC and CU.safeFilenameBase(detail) or tostring(detail.title or ("book-" .. id))
-                rel = util.getSafeFilename(base .. "." .. tostring(file.format or "epub"):lower(), root)
-            end
-            local dest = (root ~= "/" and root or "") .. "/" .. rel
-            local parent = dest:match("^(.*)/[^/]+$")
-            if parent then util.makePath(parent) end
-            if lfs.attributes(dest, "mode") ~= "file" then
-                local okX, Transfer = pcall(require, "bookorbit_download_transfer")
-                if not okX then return { err = "old" } end
-                pcall(Transfer.sweepStale, root)
-                -- the file's size, for the progress % (see progress above)
-                pcall(function()
-                    Transfer.ensureTempDir(root)
-                    local f = io.open(size_file, "w")
-                    if f then
-                        f:write(tostring(tonumber(file.sizeBytes) or ""))
-                        f:close()
+                -- the Queue (1.3.1): enough room for this book? (50 MB kept free)
+                if opts.check_space then
+                    local size = tonumber(file.sizeBytes)
+                    local du = util.diskUsage and util.diskUsage(root)
+                    local free = type(du) == "table" and tonumber(du.available) or nil
+                    if size and free and size + 50 * 1024 * 1024 > free then
+                        return { err = "space", need = size, free = free }
                     end
-                end)
-                local ok_t, ok, err = pcall(Transfer.run, {
-                    root = root, destination = dest, generation = os.time(),
-                    expected_bytes = file.sizeBytes, expected_hash = file.fileHash, hash = "partial_md5",
-                    perform = function(o)
-                        o.variant = file.selection and (file.requestedVariant or file.downloadVariant) or nil
-                        o.selection = file.selection
-                        return client:downloadCatalogFile(file.id, dest, o)
-                    end,
-                })
-                if not (ok_t and ok) then return { err = tostring(ok_t and err or ok) } end
+                end
+                -- the server's folder layout under the download folder
+                local rel
+                local dp = tostring(file.devicePath or ""):gsub("\\", "/"):gsub("^/+", "")
+                if dp ~= "" then
+                    local segs, bad = {}, false
+                    for seg in dp:gmatch("[^/]+") do
+                        if seg == ".." then bad = true break end
+                        if seg ~= "." then segs[#segs + 1] = util.getSafeFilename(seg, root) end
+                    end
+                    if not bad and #segs > 0 then rel = table.concat(segs, "/") end
+                end
+                if not rel then
+                    local okC, CU = pcall(require, "bookorbit_catalog_util")
+                    local base = okC and CU.safeFilenameBase(detail) or tostring(detail.title or ("book-" .. id))
+                    rel = util.getSafeFilename(base .. "." .. tostring(file.format or "epub"):lower(), root)
+                end
+                if suffix then
+                    local stem, ext = rel:match("^(.*)(%.[^./]+)$")
+                    rel = stem and (stem .. suffix .. ext) or (rel .. suffix)
+                end
+                local dest = (root ~= "/" and root or "") .. "/" .. rel
+                local parent = dest:match("^(.*)/[^/]+$")
+                if parent then util.makePath(parent) end
+                if lfs.attributes(dest, "mode") ~= "file" then
+                    local okX, Transfer = pcall(require, "bookorbit_download_transfer")
+                    if not okX then return { err = "old" } end
+                    pcall(Transfer.sweepStale, root)
+                    -- the file's size, for the progress % (see progress above)
+                    pcall(function()
+                        Transfer.ensureTempDir(root)
+                        local f = io.open(size_file, "w")
+                        if f then
+                            f:write(tostring(tonumber(file.sizeBytes) or ""))
+                            f:close()
+                        end
+                    end)
+                    local ok_t, ok, err = pcall(Transfer.run, {
+                        root = root, destination = dest, generation = os.time(),
+                        expected_bytes = file.sizeBytes, expected_hash = file.fileHash, hash = "partial_md5",
+                        perform = function(o)
+                            o.variant = file.selection and (file.requestedVariant or file.downloadVariant) or nil
+                            o.selection = file.selection
+                            return client:downloadCatalogFile(file.id, dest, o)
+                        end,
+                    })
+                    if not (ok_t and ok) then return { err = tostring(ok_t and err or ok) } end
+                end
+                return { dest = dest, file_id = file.id, title = detail.title,
+                    read_along = file.sourceMediaOverlayAvailable == true }
             end
-            return { dest = dest, file_id = file.id, title = detail.title }
+
+            -- mark a successful result that has no media-overlay so callers can say so
+            local function noNarration(r)
+                if not r.err and not r.read_along then r.no_narration = true end
+                return r
+            end
+            -- With Narration only: require a real read-along file; no silent text fallback
+            if mode == "narration" then
+                return getOne("original", nil, true)
+            end
+            if mode == "bookorbit" then
+                -- BookOrbit's own EPUB delivery setting for this device
+                local v
+                pcall(function()
+                    local s = G_reader_settings:readSetting("bookorbit")
+                    if type(s) == "table" then v = require("bookorbit_delivery").resolve(s, client) end
+                end)
+                if v == "original" then
+                    -- same rule as With Narration: only the narrated file if one exists
+                    return getOne("original", nil, true)
+                end
+                return getOne(nil)
+            end
+            local res = getOne(nil)
+            if mode == "both" then noNarration(res) end
+            -- Both: text-only first, then the narrated copy beside it when the book has one
+            if mode == "both" and not res.err then
+                if res.read_along then
+                    local r2 = getOne("original", " - With Narration", true)
+                    if r2.err then
+                        res.extra_err = r2.err
+                    else
+                        res.extra, res.extra_file_id = r2.dest, r2.file_id
+                    end
+                else
+                    -- book has no narration at all
+                    res.no_narration = true
+                end
+            end
+            return res
         end, function(res)
             downloading[id] = nil
             pcall(os.remove, size_file)
@@ -1076,6 +1161,12 @@ local function downloadBookOrbitBook(book, on_done, opts)
                 if res.err == "details" then return fail(_("Could not load book details")) end
                 if res.err == "nofile" then return fail(_("No file this reader can open")) end
                 if res.err == "old" then return fail(_("This BookOrbit version can't download from here.")) end
+                if res.err == "no_narration" then
+                    return fail(_("No narration file for this book."))
+                end
+                if res.err == "variant" then
+                    return fail(_("This BookOrbit server can't send the narration. Update BookOrbit, or set Downloads › Book Type to Text Only."))
+                end
                 if res.err == "space" then
                     local mb = O.mb or function(b) return tostring(math.floor((b or 0) / 1048576)) .. " MB" end
                     return fail(T(_("Not enough space: needs %1, %2 free"), mb(res.need), mb(res.free)))
@@ -1092,7 +1183,14 @@ local function downloadBookOrbitBook(book, on_done, opts)
             rememberLocalDownload(id, dest)
             -- downloaded some other way while it was queued: off the Queue
             if O.Queue then pcall(O.Queue.removeDownload, id, true) end
-            if on_done then pcall(on_done, dest) end
+            -- Bulk / Queue: which parts came back
+            if on_done then
+                pcall(on_done, dest, {
+                    no_narration = res.no_narration == true,
+                    narration_failed = res.extra_err ~= nil,
+                    narration_ok = res.extra ~= nil,
+                })
+            end
             -- the shelf shows it as on the device now, whoever started the download;
             -- before the link below, which is a network call
             retargetHeroPreview(id, dest)
@@ -1101,13 +1199,17 @@ local function downloadBookOrbitBook(book, on_done, opts)
                 if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
             end
 
+            -- the copy with narration (Both): remembered, so removing the book removes it too
+            if res.extra then rememberNarratedCopy(id, res.extra) end
+            if res.extra_err then logger.warn(TAG, "narration copy not downloaded:", res.extra_err) end
+
             -- linked to its BookOrbit book, so it syncs: in the worker too
-            UIManager:scheduleIn(0.5, function()
+            local function link(path, file_id)
                 O.runWorker(client, function()
                     local util = require("util")
-                    local digest = util.partialMD5(dest)
+                    local digest = util.partialMD5(path)
                     if not digest then return nil end
-                    local body = client:matchCheck({ digest }, { [digest] = { source = "file", book_file_id = res.file_id } })
+                    local body = client:matchCheck({ digest }, { [digest] = { source = "file", book_file_id = file_id } })
                     return type(body) == "table" and { digest = digest, body = body } or nil
                 end, function(m)
                     pcall(function()
@@ -1116,25 +1218,48 @@ local function downloadBookOrbitBook(book, on_done, opts)
                         if SM.applyLibraryVersion then SM.applyLibraryVersion(m.body.libraryVersion) end
                         for _i, x in ipairs(m.body.matches or {}) do
                             if x.hash == m.digest then
-                                SM.linkFile(m.digest, x.bookFileId, x.bookId, dest)
+                                SM.linkFile(m.digest, x.bookFileId, x.bookId, path)
                                 return
                             end
                         end
                     end)
                 end, 60)
+            end
+            UIManager:scheduleIn(0.5, function()
+                link(dest, res.file_id)
+                if res.extra then link(res.extra, res.extra_file_id) end
             end)
 
             -- it is not opened by itself: the reader chooses
             if opts.quiet then return end
+            local title = tostring(res.title or book.title or "")
+            local body
+            if mode == "both" then
+                -- say clearly what arrived and what didn't
+                if res.extra then
+                    body = T(_("Downloaded %1:\n• Text\n• With Narration"), title)
+                elseif res.no_narration then
+                    body = T(_("Downloaded %1:\n• Text\n• Narration: none for this book"), title)
+                elseif res.extra_err then
+                    body = T(_("Downloaded %1:\n• Text\n• Narration: failed"), title)
+                else
+                    body = T(_("Downloaded %1:\n• Text"), title)
+                end
+            elseif res.no_narration then
+                body = T(_("Downloaded %1."), title)
+                    .. "\n\n" .. _("This book has no narration, so only the regular EPUB was downloaded.")
+            else
+                body = T(_("Downloaded %1."), title)
+            end
             UIManager:show(require("ui/widget/confirmbox"):new{
-                text = T(_("Downloaded %1.\n\nOpen it now?"), tostring(res.title or book.title or "")),
+                text = body .. "\n\n" .. _("Open it now?"),
                 ok_text = _("Open"),
                 cancel_text = _("Later"),
                 ok_callback = function()
                     require("apps/reader/readerui"):showReader(dest)
                 end,
             })
-        end, 600, progress)
+        end, mode == "text" and 600 or 1800, progress) -- narration copies are big: 30 minutes
     end
 
     local okN, NetworkMgr = pcall(require, "ui/network/manager")
@@ -1164,10 +1289,60 @@ end
 -- Deletes a book's file, its sidecar and its history / collection entries; no
 -- questions and no redraw (Remove From Device and Bulk Remove ask first). True when
 -- the file is gone.
+-- one file, its sidecar and its history / collection entries
+local function deleteOneFile(path)
+    pcall(os.remove, path)
+    -- sidecar
+    local sdr = path:match("^(.*)%.[^.]+$")
+    if sdr then
+        local dir = sdr .. ".sdr"
+        if lfs.attributes(dir, "mode") == "directory" then
+            pcall(function()
+                for f in lfs.dir(dir) do
+                    if f ~= "." and f ~= ".." then pcall(os.remove, dir .. "/" .. f) end
+                end
+                lfs.rmdir(dir)
+            end)
+        end
+    end
+    -- history / collections best-effort
+    pcall(function()
+        local ReadHistory = require("readhistory")
+        if ReadHistory and ReadHistory.removeItemByPath then
+            ReadHistory:removeItemByPath(path)
+        end
+    end)
+    pcall(function()
+        local RC = require("readcollection")
+        if type(RC) == "table" and type(RC.coll) == "table" then
+            for name in pairs(RC.coll) do
+                if RC.removeItem then pcall(RC.removeItem, RC, path, name) end
+            end
+        end
+    end)
+end
+
 local function deleteBookFiles(book, path)
     path = path or devicePathOf(book)
     if not path then return false end
     pcall(os.remove, path)
+    -- the copy with narration (Book Type › Both), if there is one
+    local extra = takeNarratedCopy(book.bookorbit_id)
+    if extra and extra ~= path and lfs.attributes(extra, "mode") == "file" then
+        pcall(os.remove, extra)
+        local esdr = extra:match("^(.*)%.[^.]+$")
+        if esdr then
+            local dir = esdr .. ".sdr"
+            if lfs.attributes(dir, "mode") == "directory" then
+                pcall(function()
+                    for f in lfs.dir(dir) do
+                        if f ~= "." and f ~= ".." then pcall(os.remove, dir .. "/" .. f) end
+                    end
+                    lfs.rmdir(dir)
+                end)
+            end
+        end
+    end
     -- sidecar
     local sdr = path:match("^(.*)%.[^.]+$")
     if sdr then

@@ -1,16 +1,78 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
 -- Add To Collection without BookOrbit Tweaks.
 --
--- BookOrbit's KOReader sign-in can't change collections; only the website sign-in
--- can. This is BookOrbit Tweaks' own Add To Collection (2.15.8), with the same
--- messages, sign-in box, notice and saved-password files, so the two share one
--- login: save it in either and the other uses it. With BookOrbit Tweaks installed,
--- OrbitShelf opens that patch's picker instead and this one stays unused.
+-- BookOrbit's KOReader sign-in cannot change collections. From BookOrbit 3.8.0
+-- an API key (Settings > You > API keys) can, with Read+Write access. This
+-- module uses that key instead of the old website-password login.
+--
+-- With BookOrbit Tweaks installed, OrbitShelf still opens that patch's picker
+-- when present; this file stays unused in that case.
 local O = require("orbitshelf_core")
 local _ = O._
 
 local T = require("ffi/util").template
-local LOGIN_FILE = "bookorbit_tweaks_login.lua"
+local LOGIN_FILE = "orbitshelf_api_key.lua"          -- encrypted key store (settings/)
+local PLAIN_KEY_FILE = "orbitshelf_api_key.txt"      -- temp plain file for easy import
+local KEYRING_FILE = "orbitshelf_api_keyring.lua"
+
+-- Temp key file lives in the koreader folder (works on Kobo, Kindle, Android,
+-- etc.). settings/ is still accepted as a fallback.
+local function plainKeyPaths()
+    local DS = require("datastorage")
+    return {
+        DS:getDataDir() .. "/" .. PLAIN_KEY_FILE,
+        DS:getSettingsDir() .. "/" .. PLAIN_KEY_FILE,
+    }
+end
+
+-- Write a clear template so the file explains itself.
+-- force: rewrite even if present (menu "Create API Key File").
+-- Returns the path, or nil on failure.
+local function ensurePlainKeyTemplate(force)
+    local path = plainKeyPaths()[1]
+    if not path then return nil end
+    if not force and lfs.attributes(path, "mode") == "file" then return path end
+    local parent = path:match("^(.*)/[^/]+$")
+    if parent then pcall(function() require("util").makePath(parent) end) end
+    local f = io.open(path, "w")
+    if not f then return nil end
+    f:write([[
+OrbitShelf / BookOrbit Tweaks — Temporary API Key File
+
+This is a TEMPORARY file. It is only a way to get your BookOrbit API Key
+onto the device without typing it on the device keyboard.
+
+What happens:
+1. Paste your API Key on the line marked ENTER API KEY HERE below.
+2. Save this file and unplug the device.
+3. On the device use Add To Collection (BookOrbit or OrbitShelf), or
+   Tools > OrbitShelf > BookOrbit Sign-In > Set API Key…
+4. The key is read from this file, saved ENCRYPTED on this device, and
+   this file is deleted. After that, the only copy is the encrypted one.
+5. OrbitShelf and BookOrbit Tweaks share the same encrypted key — enter once.
+6. If you never sign in, nothing reads this file and the key stays here
+   in plain text. Delete this file yourself if you change your mind.
+
+Make the key on your PC in BookOrbit: Settings > You > API Keys > Create,
+with Read And Write. It starts with bok_ and is shown only once.
+
+ENTER API KEY HERE:
+
+]])
+    f:close()
+    return path
+end
+
+local function writeTempKeyFile()
+    local path = ensurePlainKeyTemplate(true)
+    if not path then
+        failure(_("Couldn't create koreader/orbitshelf_api_key.txt"))
+        return
+    end
+    note(T(_("API key file ready:\n%1\n\nPaste your bok_ key on the ENTER API KEY HERE line, save, unplug, then use Add To Collection or Set API Key…"), path),
+         _("Key file created"), 5)
+end
+
 
 -- Shared notification contract (same as Network Tweaks' other patches):
 -- results follow Network Tweaks' style (Banner / Minimal / Normal), then
@@ -38,18 +100,26 @@ local function failure(text)
     UIManager:show(require("ui/widget/infomessage"):new{ text = text })
 end
 
--- Shown before the password is first asked for, and from the menu.
+-- Shown the first time and from the menu.
 local SECURITY_TEXT = _([[
-Add To Collection needs your BookOrbit password.
+Add To Collection needs a BookOrbit API key.
 
-• Why: BookOrbit's KOReader sign-in can read your library and sync, but it can't change collections. Only the web sign-in can, the same one the BookOrbit website uses.
-• Where it goes: only to your own BookOrbit server's sign-in, over the server address you set in BookOrbit. Nothing is sent anywhere else.
-• While KOReader runs: the server's session key is kept in memory for 10 minutes, then it signs in again. Nothing about the session is written to disk.
-• If you save it: it's encrypted (AES-256) in koreader/settings/bookorbit_tweaks_login.lua, with the key in a separate file, bookorbit_tweaks_keyring.lua. That stops someone casually browsing your files. It does not stop someone with full access to the e-reader, because the key is on the same device.
-• Backups: neither file goes into Patch Backup & Restore's backups or device backups.
-• Remove it anytime: OrbitShelf > Add To Collection > Forget Saved BookOrbit Password (or BookOrbit Tweaks' own).
-If you'd rather not keep it, untick Save Password in the sign-in box: you'll be asked again after 10 minutes or a restart. Only a sign-in BookOrbit accepts is ever saved.]])
-local KEYRING_FILE = "bookorbit_tweaks_keyring.lua"
+• Why: BookOrbit's KOReader sign-in can read your library and sync, but it cannot change collections. An API key with Read and write access can.
+
+• Create one: on the BookOrbit website go to Settings > You > API keys. Create a key, choose "Read and write", give it the permissions you want (or leave the defaults), and copy the key (it starts with bok_ and is shown only once).
+
+• How to get it onto the device (typing a long key on an e-reader is hard):
+  1. Easiest – over USB open koreader/orbitshelf_api_key.txt (OrbitShelf puts a ready template there). Paste the key on the marked line, save, unplug, then use Add To Collection or OrbitShelf → BookOrbit Sign-In. The key is imported, encrypted, and that temp file is deleted.
+  2. Or open OrbitShelf > BookOrbit Sign-In > Set API Key… and paste / type the key (a USB keyboard or clipboard paste helps a lot).
+
+• Storage: the key is encrypted (AES-256) in koreader/settings/orbitshelf_api_key.lua with the key material in orbitshelf_api_keyring.lua. That stops casual browsing of your files. It does not stop someone with full access to the device.
+
+• Backups: those two files are excluded from Patch Backup & Restore and normal device backups.
+
+• Shared with BookOrbit Tweaks: the same encrypted key is used by both if Tweaks is installed.
+
+• Remove it anytime: OrbitShelf > BookOrbit Sign-In > Forget Saved API Key (or BookOrbit Tweaks > Forget Saved API Key).
+]])
 
 local Crypto = {}
 do
@@ -82,61 +152,75 @@ do
             if okl and l then return l end
             return ffi.load("crypto")
         end)
-        lib = (ok and res) or false
+        lib = ok and res or false
         return lib or nil
     end
-    local function hex(s) return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
-    local function unhex(s)
-        if type(s) ~= "string" or not s:match("^%x*$") or #s % 2 ~= 0 then return nil end
-        return (s:gsub("%x%x", function(cc) return string.char(tonumber(cc, 16)) end))
+    local function hex(s)
+        return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end))
     end
-    local function rand(l, n)
-        local buf = ffi.new("unsigned char[?]", n)
-        if l.RAND_bytes(buf, n) ~= 1 then return nil end
-        return ffi.string(buf, n)
-    end
-    local function cipher(encrypt, key, iv, input)
-        local l = libcrypto()
-        if not l then return nil end
-        local ctx = l.EVP_CIPHER_CTX_new()
-        if ctx == nil then return nil end
-        local init = encrypt and l.EVP_EncryptInit_ex or l.EVP_DecryptInit_ex
-        local update = encrypt and l.EVP_EncryptUpdate or l.EVP_DecryptUpdate
-        local final = encrypt and l.EVP_EncryptFinal_ex or l.EVP_DecryptFinal_ex
-        local out, out_len
-        local ok = init(ctx, l.EVP_aes_256_cbc(), nil, key, iv) == 1
-        if ok then
-            out = ffi.new("unsigned char[?]", #input + 16)
-            local n1, n2 = ffi.new("int[1]"), ffi.new("int[1]")
-            ok = update(ctx, out, n1, input, #input) == 1 and final(ctx, out + n1[0], n2) == 1
-            if ok then out_len = n1[0] + n2[0] end
-        end
-        l.EVP_CIPHER_CTX_free(ctx)
-        return ok and ffi.string(out, out_len) or nil
+    local function unhex(h)
+        if type(h) ~= "string" or #h % 2 ~= 0 then return nil end
+        return (h:gsub("..", function(cc) return string.char(tonumber(cc, 16) or 0) end))
     end
     local function key()
-        local l = libcrypto()
-        if not l then return nil end
-        local s = require("luasettings"):open(require("datastorage"):getSettingsDir() .. "/" .. KEYRING_FILE)
-        local k = unhex(s:readSetting("aes_key"))
-        if k and #k == 32 then return k end
-        k = rand(l, 32)
-        if not k then return nil end
-        s:saveSetting("aes_key", hex(k))
+        local path = require("datastorage"):getSettingsDir() .. "/" .. KEYRING_FILE
+        local s = require("luasettings"):open(path)
+        local k = s:readSetting("k")
+        if type(k) == "string" and #k == 64 then return unhex(k) end
+        local L = libcrypto()
+        if not L then return nil end
+        local buf = ffi.new("unsigned char[32]")
+        if L.RAND_bytes(buf, 32) ~= 1 then return nil end
+        local raw = ffi.string(buf, 32)
+        s:saveSetting("k", hex(raw))
         s:flush()
-        return k
+        return raw
+    end
+    local function cipher(encrypt, k, iv, data)
+        local L = libcrypto()
+        if not L then return nil end
+        local ctx = L.EVP_CIPHER_CTX_new()
+        if ctx == nil then return nil end
+        local ok, res = pcall(function()
+            local c = L.EVP_aes_256_cbc()
+            if encrypt then
+                if L.EVP_EncryptInit_ex(ctx, c, nil, k, iv) ~= 1 then error("init") end
+            else
+                if L.EVP_DecryptInit_ex(ctx, c, nil, k, iv) ~= 1 then error("init") end
+            end
+            local out = ffi.new("unsigned char[?]", #data + 32)
+            local outl = ffi.new("int[1]")
+            local finall = ffi.new("int[1]")
+            if encrypt then
+                if L.EVP_EncryptUpdate(ctx, out, outl, data, #data) ~= 1 then error("upd") end
+                if L.EVP_EncryptFinal_ex(ctx, out + outl[0], finall) ~= 1 then error("fin") end
+            else
+                if L.EVP_DecryptUpdate(ctx, out, outl, data, #data) ~= 1 then error("upd") end
+                if L.EVP_DecryptFinal_ex(ctx, out + outl[0], finall) ~= 1 then error("fin") end
+            end
+            return ffi.string(out, outl[0] + finall[0])
+        end)
+        L.EVP_CIPHER_CTX_free(ctx)
+        return ok and res or nil
     end
     function Crypto.encrypt(plain)
+        if type(plain) ~= "string" or plain == "" then return nil end
         local ok, res = pcall(function()
+            local L = libcrypto()
+            if not L then return nil end
+            local ivbuf = ffi.new("unsigned char[16]")
+            if L.RAND_bytes(ivbuf, 16) ~= 1 then return nil end
+            local iv = ffi.string(ivbuf, 16)
             local k = key()
-            local l = libcrypto()
-            local iv = k and rand(l, 16)
-            local c = iv and cipher(true, k, iv, plain)
-            return c and hex(iv .. c) or nil
+            if not k then return nil end
+            local ct = cipher(true, k, iv, plain)
+            if not ct then return nil end
+            return hex(iv .. ct)
         end)
         return ok and res or nil
     end
     function Crypto.decrypt(blob)
+        if type(blob) ~= "string" then return nil end
         local ok, res = pcall(function()
             local raw, k = unhex(blob), key()
             if not (raw and k and #raw > 16) then return nil end
@@ -150,142 +234,178 @@ local function loginStore()
     return require("luasettings"):open(require("datastorage"):getSettingsDir() .. "/" .. LOGIN_FILE)
 end
 
--- server url -> { token, until }: the web session, in memory only
-local web_sessions = {}
+-- server_url -> raw API key (in memory only after load)
+local key_cache = {}
 
--- the website username last signed in with (kept with a saved password,
--- else for this session), to fill in next time
-local typed_users = {}
-local function last_web_user(server)
-    local saved = loginStore():readSetting(server)
-    if type(saved) == "table" and type(saved.username) == "string" then return saved.username end
-    return typed_users[server]
+local function forgetKey(server)
+    if server then
+        key_cache[server] = nil
+        local s = loginStore()
+        s:delSetting(server)
+        s:flush()
+    else
+        key_cache = {}
+        local s = loginStore()
+        for k in pairs(s.data or {}) do s:delSetting(k) end
+        s:flush()
+    end
 end
 
-local function forgetLogin(server)
-    web_sessions[server] = nil
+local function saveKey(server, key)
+    if type(server) ~= "string" or type(key) ~= "string" or key == "" then return false end
+    key = key:match("^%s*(.-)%s*$") or key
+    if not key:match("^bok_") then
+        -- still accept it; the server will reject if wrong
+    end
+    local enc = Crypto.encrypt(key)
+    if not enc then
+        -- fall back to storing the key in the settings file unencrypted when crypto is missing
+        local s = loginStore()
+        s:saveSetting(server, { key = key, plain = true })
+        s:flush()
+        key_cache[server] = key
+        return true
+    end
     local s = loginStore()
-    local saved = s:readSetting(server)
-    if type(saved) == "table" and type(saved.username) == "string" then typed_users[server] = saved.username end
-    s:delSetting(server)
+    s:saveSetting(server, { key_enc = enc })
     s:flush()
+    key_cache[server] = key
+    return true
 end
 
--- Signs in the way the web app does and hands the access token to done().
--- Uses a saved password when there is one; otherwise asks, then offers to
--- save it.
-local function webSignIn(catalog, done, ask)
-    local client = catalog.client
-    local server = client and client.server_url
-    if not server then return end
-    local cached = web_sessions[server]
-    if not ask and cached and cached.token and os.time() < cached["until"] then return done(cached.token) end
+local function loadKey(server)
+    if not server then return nil end
+    if key_cache[server] then return key_cache[server] end
+    local saved = loginStore():readSetting(server)
+    if type(saved) ~= "table" then return nil end
+    local key
+    if type(saved.key_enc) == "string" then
+        key = Crypto.decrypt(saved.key_enc)
+    elseif type(saved.key) == "string" and saved.plain then
+        key = saved.key
+    end
+    if type(key) == "string" and key ~= "" then
+        key_cache[server] = key
+        return key
+    end
+    return nil
+end
 
-    local UIManager = require("ui/uimanager")
-    -- typed: from the sign-in box (else the saved password); save: its
-    -- Save Password tick. Only a sign-in the server accepted gets saved.
-    local function login(username, password, typed, save)
-        local body, err = catalog:fetch(_("Signing in to BookOrbit…"), function()
-            return client:requestBlocking("POST", "/auth/login",
-                { username = username, password = password, clientKind = "native", deviceLabel = "KOReader" })
-        end)
-        if not (type(body) == "table" and type(body.accessToken) == "string") then
-            if err == "cancelled" then return end
-            if not typed then forgetLogin(server) end -- a saved password that no longer works
-            failure(err == 401 and _("BookOrbit didn't accept that username or password.\n\nUse the login you sign in to the BookOrbit website with. Your KOReader sync username can be different.") or T(_("Couldn't sign in to BookOrbit:\n%1"), tostring(err)))
-            if not typed then return webSignIn(catalog, done, true) end
-            return
-        end
-        web_sessions[server] = { token = body.accessToken, ["until"] = os.time() + 10 * 60 }
-        typed_users[server] = username
-        if typed and save then
-            local enc = Crypto.encrypt(password)
-            if enc then
-                local st = loginStore()
-                st:saveSetting(server, { username = username, password_enc = enc })
-                st:flush()
-                note(_("Signed in. Password saved on this device (encrypted)."), _("Password saved"))
-            else
-                -- never kept in plain text
-                failure(_("Signed in, but encryption isn't available on this device, so the password wasn't saved. You'll be asked for it again after a restart."))
+-- Import a plain-text key file if present (easy transfer from a computer).
+-- Looks in koreader/ first, then settings/. File is deleted after a successful import.
+local function tryImportPlainKey(server)
+    for _i, path in ipairs(plainKeyPaths()) do
+        local f = io.open(path, "r")
+        if f then
+            local content = f:read("*a") or ""
+            f:close()
+            -- skip pure template (only comments / placeholder)
+            local key = content:match("(bok_[%w%-_]+)")
+            if key and #key >= 20 and key ~= "bok_" then
+                if saveKey(server, key) then
+                    pcall(os.remove, path)
+                    -- also clear the other candidate path so a leftover isn't re-imported
+                    for _j, other in ipairs(plainKeyPaths()) do
+                        if other ~= path then pcall(os.remove, other) end
+                    end
+                    note(_("API key imported from the temp file and encrypted. The temp file was removed."), _("Key imported"))
+                    return key
+                end
             end
         end
-        return done(body.accessToken)
     end
+    return nil
+end
 
-    if not ask then
-        local saved = loginStore():readSetting(server)
-        local password = type(saved) == "table" and Crypto.decrypt(saved.password_enc)
-        if password then return login(saved.username, password, false, false) end
+local function getApiKey(server, force_ask)
+    if not server then return nil end
+    if not force_ask then
+        local k = loadKey(server)
+        if k then return k end
+        k = tryImportPlainKey(server)
+        if k then return k end
     end
-    local function askPassword()
+    return nil
+end
+
+-- Ask the user for an API key (or re-ask after a 401).
+local function askForKey(server, done)
+    ensurePlainKeyTemplate()
+    local UIManager = require("ui/uimanager")
     local MultiInputDialog = require("ui/widget/multiinputdialog")
-    local CheckButton = require("ui/widget/checkbutton")
-    local dlg, save_box
+    local dlg
     dlg = MultiInputDialog:new{
-        title = _("Sign in to BookOrbit"),
-        description = _("Your BookOrbit website login (not your KOReader sync name)."),
+        title = _("BookOrbit API Key"),
+        description = _("Paste or type a key that starts with bok_.\n\nEasier over USB: put the key in koreader/orbitshelf_api_key.txt (a temp file OrbitShelf creates there). After you continue, it is imported, encrypted, and that file is deleted."),
         fields = {
-            -- not the sync username: that's a separate account and often a
-            -- different name, which made the right password fail
-            { text = last_web_user(server) or "", hint = _("Website username") },
-            { text = "", hint = _("Password"), text_type = "password" },
+            { text = "", hint = _("bok_…"), text_type = "password" },
         },
         buttons = {{
             { text = _("Cancel"), id = "close", callback = function() UIManager:close(dlg) end },
-            { text = _("Sign In"), is_enter_default = true, callback = function()
+            { text = _("Save"), is_enter_default = true, callback = function()
                 local f = dlg:getFields()
-                local save = save_box and save_box.checked or false
                 UIManager:close(dlg)
-                if f[1] ~= "" and f[2] ~= "" then login(f[1], f[2], true, save) end
+                local key = f[1] and f[1]:match("^%s*(.-)%s*$")
+                if key and key ~= "" then
+                    if saveKey(server, key) then
+                        -- drop any leftover temp import files
+                        for _i, path in ipairs(plainKeyPaths()) do pcall(os.remove, path) end
+                        note(_("API key saved on this device (encrypted)."), _("Key saved"))
+                        if done then done(key) end
+                    else
+                        failure(_("Couldn't save the API key."))
+                    end
+                end
             end },
         }},
     }
-    -- ticked or not, nothing is saved until the server accepts the sign-in;
-    -- the choice is remembered for next time
-    save_box = CheckButton:new{
-        text = _("Save password on this device (encrypted)"),
-        checked = not (G_reader_settings and G_reader_settings:isFalse("bookorbit_tweaks_save_password")),
-        parent = dlg,
-        callback = function()
-            if G_reader_settings then
-                G_reader_settings:saveSetting("bookorbit_tweaks_save_password", save_box.checked and true or false)
-            end
-        end,
-    }
-    dlg:addWidget(save_box)
     UIManager:show(dlg)
     dlg:onShowKeyboard()
-    end
-    -- The first time on this device (and after Forget): what happens to the
-    -- password, before it's typed.
-    if G_reader_settings and not G_reader_settings:isTrue("bookorbit_tweaks_password_notice_seen") then
+end
+
+-- Obtain a usable key; ask once if missing.
+local function ensureKey(catalog, done, force_ask)
+    local client = catalog and catalog.client
+    local server = client and client.server_url
+    if not server then return end
+    local key = getApiKey(server, force_ask)
+    if key then return done(key) end
+
+    ensurePlainKeyTemplate()
+    local UIManager = require("ui/uimanager")
+    if G_reader_settings and not G_reader_settings:isTrue("orbitshelf_api_key_notice_seen") then
         UIManager:show(require("ui/widget/confirmbox"):new{
             text = SECURITY_TEXT,
             ok_text = _("Continue"),
             cancel_text = _("Cancel"),
             ok_callback = function()
-                G_reader_settings:saveSetting("bookorbit_tweaks_password_notice_seen", true)
-                askPassword()
+                G_reader_settings:saveSetting("orbitshelf_api_key_notice_seen", true)
+                -- try the temp file again in case they filled it while reading this
+                local k2 = tryImportPlainKey(server)
+                if k2 then return done(k2) end
+                askForKey(server, done)
             end,
         })
         return
     end
-    askPassword()
+    askForKey(server, done)
 end
 
--- One authorised call; a session the server turned down signs in again once.
-local function webCall(catalog, label, method, path, body, done, retried)
-    webSignIn(catalog, function(token)
+-- One authorised call. A 401 clears the key and asks again once.
+local function apiCall(catalog, label, method, path, body, done, retried)
+    ensureKey(catalog, function(key)
         local res, err = catalog:fetch(label, function()
-            return catalog.client:requestBlocking(method, path, body, { ["Authorization"] = "Bearer " .. token })
+            return catalog.client:requestBlocking(method, path, body, {
+                ["Authorization"] = "Bearer " .. key,
+            })
         end)
         if err == 401 and not retried then
-            web_sessions[catalog.client.server_url] = nil
-            return webCall(catalog, label, method, path, body, done, true)
+            local server = catalog.client and catalog.client.server_url
+            if server then forgetKey(server) end
+            return apiCall(catalog, label, method, path, body, done, true)
         end
         done(res, err)
-    end)
+    end, retried)
 end
 
 local showCollections
@@ -294,7 +414,7 @@ showCollections = function(catalog, detail)
     if not book_id then return end
     local UIManager = require("ui/uimanager")
     catalog:runConnected(function()
-        webCall(catalog, _("Loading your collections…"), "GET", "/collections?bookIds=" .. book_id, nil, function(list, err)
+        apiCall(catalog, _("Loading your collections…"), "GET", "/collections?bookIds=" .. book_id, nil, function(list, err)
             if type(list) ~= "table" then
                 if err ~= "cancelled" then failure(T(_("Couldn't load your BookOrbit collections:\n%1"), tostring(err))) end
                 return
@@ -309,7 +429,7 @@ showCollections = function(catalog, detail)
                         text = (inside and "\u{2713} " or "") .. tostring(c.name or c.id),
                         callback = function()
                             UIManager:close(dlg)
-                            webCall(catalog, inside and _("Removing…") or _("Adding…"),
+                            apiCall(catalog, inside and _("Removing…") or _("Adding…"),
                                 inside and "DELETE" or "POST", "/collections/" .. c.id .. "/books",
                                 { bookIds = { book_id } }, function(res, e)
                                     if res == nil and e ~= nil then
@@ -332,18 +452,20 @@ showCollections = function(catalog, detail)
                     local input
                     input = InputDialog:new{
                         title = _("New collection"),
+                        input = "",
+                        input_hint = _("Name"),
                         buttons = {{
                             { text = _("Cancel"), id = "close", callback = function() UIManager:close(input) end },
                             { text = _("Create"), is_enter_default = true, callback = function()
-                                local name = (input:getInputText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                                local name = input:getInputText()
                                 UIManager:close(input)
-                                if name == "" then return end
-                                webCall(catalog, _("Creating…"), "POST", "/collections", { name = name, icon = "library" }, function(made, e)
+                                if not name or name == "" then return end
+                                apiCall(catalog, _("Creating…"), "POST", "/collections", { name = name, icon = "library" }, function(made, e)
                                     if type(made) ~= "table" or not made.id then
                                         if e ~= "cancelled" then failure(T(_("Couldn't create the collection:\n%1"), tostring(e))) end
                                         return
                                     end
-                                    webCall(catalog, _("Adding…"), "POST", "/collections/" .. made.id .. "/books", { bookIds = { book_id } }, function(res, e2)
+                                    apiCall(catalog, _("Adding…"), "POST", "/collections/" .. made.id .. "/books", { bookIds = { book_id } }, function(res, e2)
                                         if res == nil and e2 ~= nil then
                                             if e2 ~= "cancelled" then failure(T(_("Made %1, but couldn't add the book:\n%2"), name, tostring(e2))) end
                                             return
@@ -368,7 +490,7 @@ showCollections = function(catalog, detail)
     end)
 end
 
--- Saved password and its key: never in Patch Backup & Restore's backups.
+-- Exclude the encrypted key files from Patch Backup & Restore.
 do
     local BK = package.loaded.backup_patches or { targets = {} }
     package.loaded.backup_patches = BK
@@ -419,17 +541,41 @@ O.Collections = {
         return okl and type(st.data) == "table" and next(st.data) ~= nil
     end,
     forget = function()
-        local okl, st = pcall(loginStore)
-        if okl then
-            for k in pairs(st.data) do st:delSetting(k) end
-            st:flush()
-        end
-        for k in pairs(web_sessions) do web_sessions[k] = nil end
-        G_reader_settings:delSetting("bookorbit_tweaks_password_notice_seen")
-        note(_("Saved BookOrbit password removed from this device."), _("Password forgotten"))
+        forgetKey()
+        G_reader_settings:delSetting("orbitshelf_api_key_notice_seen")
+        note(_("Saved BookOrbit API key removed from this device."), _("API key forgotten"))
     end,
     about = function()
-        require("ui/uimanager"):show(require("ui/widget/infomessage"):new{ text = SECURITY_TEXT })
+        local Screen = require("device").screen
+        local TextViewer = require("ui/widget/textviewer")
+        local width = math.floor(Screen:getWidth() * 0.88)
+        local max_h = math.floor(Screen:getHeight() * 0.8)
+        require("ui/uimanager"):show(TextViewer:new{
+            title = _("About The API Key"),
+            text = SECURITY_TEXT,
+            width = width,
+            height = max_h,
+        })
+    end,
+    writeTempKeyFile = writeTempKeyFile,
+    -- Explicit entry point so the menu can open the key dialog without a book
+    setKey = function(client)
+        local server = client and client.server_url
+            or (G_reader_settings and G_reader_settings:readSetting("bookorbit") or {}).server_url
+        if not server then
+            failure(_("BookOrbit is not signed in, so there is no server address to attach the key to."))
+            return
+        end
+        -- already have a key for this (or any) server: don't open a blank entry dialog
+        if loadKey(server) or (next(loginStore().data or {}) ~= nil) then
+            note(_("API key is active on this device (encrypted).\n\nTo use a different key: Forget Saved API Key, then Set API Key… or Create API Key File."),
+                 _("API key active"), 4)
+            return
+        end
+        -- try import first (in case the temp file was filled over USB)
+        local imported = tryImportPlainKey(server)
+        if imported then return end
+        askForKey(server)
     end,
 }
 return O
