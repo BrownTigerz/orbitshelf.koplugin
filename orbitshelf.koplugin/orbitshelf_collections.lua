@@ -63,17 +63,6 @@ ENTER API KEY HERE:
     return path
 end
 
-local function writeTempKeyFile()
-    local path = ensurePlainKeyTemplate(true)
-    if not path then
-        failure(_("Couldn't create koreader/orbitshelf_api_key.txt"))
-        return
-    end
-    note(T(_("API key file ready:\n%1\n\nPaste your bok_ key on the ENTER API KEY HERE line, save, unplug, then use Add To Collection or Set API Key…"), path),
-         _("Key file created"), 5)
-end
-
-
 -- Shared notification contract (same as Network Tweaks' other patches):
 -- results follow Network Tweaks' style (Banner / Minimal / Normal), then
 -- ReadMastery's, else a short KOReader note; never over the sleep screen.
@@ -99,6 +88,18 @@ local function failure(text)
     local UIManager = require("ui/uimanager")
     UIManager:show(require("ui/widget/infomessage"):new{ text = text })
 end
+
+-- Menu: write the temp API key template (needs note/failure above).
+local function writeTempKeyFile()
+    local path = ensurePlainKeyTemplate(true)
+    if not path then
+        failure(_("Couldn't create koreader/orbitshelf_api_key.txt"))
+        return
+    end
+    note(T(_("API key file ready:\n%1\n\nPaste your bok_ key on the ENTER API KEY HERE line, save, unplug, then use Add To Collection or Set API Key…"), path),
+         _("Key file created"), 5)
+end
+
 
 -- Shown the first time and from the menu.
 local SECURITY_TEXT = _([[
