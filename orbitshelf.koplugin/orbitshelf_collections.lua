@@ -31,7 +31,7 @@ end
 local function ensurePlainKeyTemplate(force)
     local path = plainKeyPaths()[1]
     if not path then return nil end
-    if not force and lfs.attributes(path, "mode") == "file" then return path end
+    if not force and O.lfs.attributes(path, "mode") == "file" then return path end
     local parent = path:match("^(.*)/[^/]+$")
     if parent then pcall(function() require("util").makePath(parent) end) end
     local f = io.open(path, "w")
@@ -46,7 +46,7 @@ What happens:
 1. Paste your API Key on the line marked ENTER API KEY HERE below.
 2. Save this file and unplug the device.
 3. On the device use Add To Collection (BookOrbit or OrbitShelf), or
-   Tools > OrbitShelf > BookOrbit Sign-In > Set API Key…
+   Tools > OrbitShelf > BookOrbit Account > Set API Key…
 4. The key is read from this file, saved ENCRYPTED on this device, and
    this file is deleted. After that, the only copy is the encrypted one.
 5. OrbitShelf and BookOrbit Tweaks share the same encrypted key — enter once.
@@ -110,8 +110,8 @@ Add To Collection needs a BookOrbit API key.
 • Create one: on the BookOrbit website go to Settings > You > API keys. Create a key, choose "Read and write", give it the permissions you want (or leave the defaults), and copy the key (it starts with bok_ and is shown only once).
 
 • How to get it onto the device (typing a long key on an e-reader is hard):
-  1. Easiest – over USB open koreader/orbitshelf_api_key.txt (OrbitShelf puts a ready template there). Paste the key on the marked line, save, unplug, then use Add To Collection or OrbitShelf → BookOrbit Sign-In. The key is imported, encrypted, and that temp file is deleted.
-  2. Or open OrbitShelf > BookOrbit Sign-In > Set API Key… and paste / type the key (a USB keyboard or clipboard paste helps a lot).
+  1. Easiest – over USB open koreader/orbitshelf_api_key.txt (OrbitShelf puts a ready template there). Paste the key on the marked line, save, unplug, then use Add To Collection or OrbitShelf → BookOrbit Account. The key is imported, encrypted, and that temp file is deleted.
+  2. Or open OrbitShelf > BookOrbit Account > Set API Key… and paste / type the key (a USB keyboard or clipboard paste helps a lot).
 
 • Storage: the key is encrypted (AES-256) in koreader/settings/orbitshelf_api_key.lua with the key material in orbitshelf_api_keyring.lua. That stops casual browsing of your files. It does not stop someone with full access to the device.
 
@@ -119,7 +119,7 @@ Add To Collection needs a BookOrbit API key.
 
 • Shared with BookOrbit Tweaks: the same encrypted key is used by both if Tweaks is installed.
 
-• Remove it anytime: OrbitShelf > BookOrbit Sign-In > Forget Saved API Key (or BookOrbit Tweaks > Forget Saved API Key).
+• Remove it anytime: OrbitShelf > BookOrbit Account > Forget Saved API Key (or BookOrbit Tweaks > Forget Saved API Key).
 ]])
 
 local Crypto = {}
@@ -163,19 +163,43 @@ do
         if type(h) ~= "string" or #h % 2 ~= 0 then return nil end
         return (h:gsub("..", function(cc) return string.char(tonumber(cc, 16) or 0) end))
     end
+    -- 2.1.19 (TK: stats asked for the key Add To Collection already had): BookOrbit
+    -- Tweaks keeps the shared unlock key as "aes_key", OrbitShelf kept its own as "k",
+    -- in the same keyring file, so a key saved by one couldn't be opened by the other
+    -- (and OrbitShelf made a fresh "k" and asked again). "aes_key" is the shared one now;
+    -- an old "k" is still tried when opening.
+    local function keyring()
+        return require("luasettings"):open(require("datastorage"):getSettingsDir() .. "/" .. KEYRING_FILE)
+    end
+    local function stored(s, name)
+        local k = s:readSetting(name)
+        if type(k) == "string" and #k == 64 and k:match("^%x+$") then return unhex(k) end
+    end
+    -- the key to lock with: the shared one (made from an old "k", or new, when missing)
     local function key()
-        local path = require("datastorage"):getSettingsDir() .. "/" .. KEYRING_FILE
-        local s = require("luasettings"):open(path)
-        local k = s:readSetting("k")
-        if type(k) == "string" and #k == 64 then return unhex(k) end
-        local L = libcrypto()
-        if not L then return nil end
-        local buf = ffi.new("unsigned char[32]")
-        if L.RAND_bytes(buf, 32) ~= 1 then return nil end
-        local raw = ffi.string(buf, 32)
-        s:saveSetting("k", hex(raw))
+        local s = keyring()
+        local k = stored(s, "aes_key")
+        if k then return k end
+        k = stored(s, "k")
+        if not k then
+            local L = libcrypto()
+            if not L then return nil end
+            local buf = ffi.new("unsigned char[32]")
+            if L.RAND_bytes(buf, 32) ~= 1 then return nil end
+            k = ffi.string(buf, 32)
+        end
+        s:saveSetting("aes_key", hex(k))
         s:flush()
-        return raw
+        return k
+    end
+    -- the keys to try when opening: the shared one, then an old OrbitShelf one
+    local function openKeys()
+        local s = keyring()
+        local out = {}
+        local a, b = stored(s, "aes_key"), stored(s, "k")
+        if a then out[#out + 1] = a end
+        if b and b ~= a then out[#out + 1] = { b } end
+        return out
     end
     local function cipher(encrypt, k, iv, data)
         local L = libcrypto()
@@ -220,14 +244,22 @@ do
         end)
         return ok and res or nil
     end
+    -- the key, and true when it was opened with an old OrbitShelf "k" (to save again)
     function Crypto.decrypt(blob)
         if type(blob) ~= "string" then return nil end
-        local ok, res = pcall(function()
-            local raw, k = unhex(blob), key()
-            if not (raw and k and #raw > 16) then return nil end
-            return cipher(false, k, raw:sub(1, 16), raw:sub(17))
+        local ok, res, old = pcall(function()
+            local raw = unhex(blob)
+            if not (raw and #raw > 16) then return nil end
+            for _i, k in ipairs(openKeys()) do
+                local legacy = type(k) == "table"
+                local plain = cipher(false, legacy and k[1] or k, raw:sub(1, 16), raw:sub(17))
+                -- a wrong key can now and then get past the padding check: a real key is plain text
+                if type(plain) == "string" and plain ~= "" and plain:match("^[%w%-_%.]+$") then return plain, legacy end
+            end
+            return nil
         end)
-        return ok and res or nil
+        if ok then return res, old end
+        return nil
     end
 end
 
@@ -309,7 +341,10 @@ local function loadKey(server)
     if type(saved) ~= "table" then return nil end
     local key
     if type(saved.key_enc) == "string" then
-        key = Crypto.decrypt(saved.key_enc)
+        local old
+        key, old = Crypto.decrypt(saved.key_enc)
+        -- 2.1.19: saved again with the shared key, so BookOrbit Tweaks can open it too
+        if key and old then pcall(saveKey, server, key) end
     elseif type(saved.key) == "string" and saved.plain then
         key = saved.key
     end
@@ -461,7 +496,6 @@ showCollections = function(catalog, detail)
                 if err ~= "cancelled" then failure(T(_("Couldn't load your BookOrbit collections:\n%1"), tostring(err))) end
                 return
             end
-            local ButtonDialog = require("ui/widget/buttondialog")
             local dlg
             local buttons = {}
             for _i, c in ipairs(list) do
@@ -522,7 +556,7 @@ showCollections = function(catalog, detail)
                     input:onShowKeyboard()
                 end,
             }}
-            dlg = ButtonDialog:new{
+            dlg = O.dialog{ colour = "pink",
                 title = T(_("Collections · %1"), tostring(detail.title or "")),
                 title_align = "center",
                 buttons = buttons,
@@ -576,6 +610,31 @@ O.Collections = {
             return false
         end
         showCollections(shelfCatalog(client, Catalog), { id = tonumber(book_id), title = title })
+        return true
+    end,
+    -- 2.1.10: one GET with the saved API key (Wi-Fi asked for if it's off), for
+    -- Reading Stats' BookOrbit side. done(body, err). false: BookOrbit isn't there.
+    get = function(client, label, path, done)
+        local okC, Catalog = pcall(require, "bookorbit_catalog")
+        if not (okC and type(Catalog) == "table" and type(client) == "table") then return false end
+        local cat = shelfCatalog(client, Catalog)
+        -- 2.1.35 (TK): with Diagnostics on, every BookOrbit look-up for stats is logged:
+        -- what was asked (the path: ids and dates only), how much came back, how long it took
+        local diag = O.cfg and O.cfg.diagnostics
+        local t0 = diag and os.time() or nil
+        local function told(body, err)
+            if diag then
+                local n
+                if type(body) == "table" then
+                    n = type(body.items) == "table" and #body.items or #body
+                    if type(body.total) == "number" then n = n .. " of " .. body.total end
+                end
+                O.logger.info(O.TAG, "BookOrbit stats get:", path, "->", n and (n .. " items") or ("failed: " .. tostring(err)),
+                    "in", os.time() - t0, "s")
+            end
+            done(body, err)
+        end
+        cat:runConnected(function() apiCall(cat, label, "GET", path, nil, told) end)
         return true
     end,
     hasSaved = function()

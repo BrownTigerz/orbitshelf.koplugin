@@ -598,7 +598,6 @@ local function buildSpec()
         picker = true,
 
         pick = function(draft, done)
-            local ButtonDialog = require("ui/widget/buttondialog")
             local dialog
             local function choose(mode, label)
                 return {{
@@ -660,7 +659,7 @@ local function buildSpec()
                     end,
                 }})
             end
-            dialog = ButtonDialog:new{
+            dialog = O.dialog{ colour = "blue",
                 title = _("BookOrbit shelf"),
                 buttons = buttons,
             }
@@ -791,7 +790,6 @@ local function buildSpec()
                         return T(_("List: %1"), names[m] or m)
                     end,
                     callback = function(d, done_row)
-                        local ButtonDialog = require("ui/widget/buttondialog")
                         local dialog
                         local function go(m, label)
                             return {{
@@ -852,7 +850,7 @@ local function buildSpec()
                             }}
                         end
                         buttons[#buttons + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }}
-                        dialog = ButtonDialog:new{
+                        dialog = O.dialog{ colour = "blue",
                             title = _("BookOrbit list"),
                             buttons = buttons,
                         }
@@ -873,7 +871,6 @@ local function buildSpec()
                             O.Genres.note(_("Pick a Library or Collection under List"))
                             return
                         end
-                        local ButtonDialog = require("ui/widget/buttondialog")
                         local dialog
                         local function opt(value, label)
                             return {{
@@ -885,7 +882,7 @@ local function buildSpec()
                                 end,
                             }}
                         end
-                        dialog = ButtonDialog:new{
+                        dialog = O.dialog{ colour = "blue",
                             title = _("Group this list's books by"),
                             buttons = {
                                 opt(nil, _("None (one list, A to Z)")),
@@ -906,7 +903,6 @@ local function buildSpec()
                         return T(_("Show: %1"), names[src.show or ""] or _("All Books"))
                     end,
                     callback = function(d, done_row)
-                        local ButtonDialog = require("ui/widget/buttondialog")
                         local dialog
                         local function opt(value, label)
                             return {{
@@ -919,7 +915,7 @@ local function buildSpec()
                                 end,
                             }}
                         end
-                        dialog = ButtonDialog:new{
+                        dialog = O.dialog{ colour = "blue",
                             title = _("Show on this shelf"),
                             buttons = {
                                 opt(nil, _("All Books")),

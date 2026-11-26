@@ -498,9 +498,8 @@ function Queue.menu()
                     text = T(_("%1. %2"), i, short(e.title, 40)) .. (e.note and (" · " .. short(e.note, 30)) or ""),
                     keep_menu_open = true,
                     callback = function(tmi)
-                        local ButtonDialog = require("ui/widget/buttondialog")
                         local dlg
-                        dlg = ButtonDialog:new{
+                        dlg = O.dialog{ colour = "teal",
                             title = tostring(e.title) .. (e.note and ("\n" .. e.note) or ""),
                             buttons = {
                                 {{ text = _("Move To Top"), enabled = i > 1, callback = function()

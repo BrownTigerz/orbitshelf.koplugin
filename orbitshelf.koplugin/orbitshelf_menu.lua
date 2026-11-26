@@ -60,6 +60,15 @@ local function cleanUpCacheItem()
                 ok_text = _("Clean Up"),
                 ok_callback = function()
                     local res = BoCovers.cleanUp()
+                    -- 2.1.8: Reading Stats' saved numbers (worked out again when needed)
+                    pcall(function()
+                        local okS, Stats = pcall(require, "orbitshelf_stats")
+                        if okS and type(Stats) == "table" and Stats.clearStore then
+                            Stats.clearStore()
+                        else
+                            os.remove(require("datastorage"):getDataDir() .. "/cache/bookorbit/orbitshelf_stats.lua")
+                        end
+                    end)
                     -- Offline Library with Wi-Fi off: keep the lists, they can't be pulled now
                     if not (cfg.offline_library and not isWifiOn()) then
                         clearPageCache()
@@ -287,52 +296,6 @@ local function flashLevel()
 end
 local FLASH_NAMES = { off = _("Off"), popups = _("Popups"), popups_shelf = _("Popups + Shelf Pages"),
     all = _("Everything"), custom = _("Custom (kept from 1.x)") }
-local function setFlash(level)
-    local popups = level ~= "off"
-    for _i, k in ipairs(FLASH_POPUPS) do cfg[k] = popups end
-    cfg.flash_shelf = level == "popups_shelf" or level == "all"
-    cfg.flash_hero = level == "all"
-    pcall(O.hookPopupFlash)
-end
-
-local function flashMenu()
-    return {
-        text_func = function() return T(_("Flash: %1"), FLASH_NAMES[flashLevel()]) end,
-        help_text = _("Full refreshes to clear e-ink ghosting. Off: none. Popups: OrbitShelf's windows (Book Description, the hold and download menus) and Bookshelf's book menu and shelf editor flash when they open and close. Popups + Shelf Pages: also every shelf page turn. Everything: also the hero when it shows another book (see Hero Flash). Custom: the separate switches from 1.x, kept as you had them until you pick one of these."),
-        sub_item_table_func = function()
-            local out = {}
-            for _i, lv in ipairs({ "off", "popups", "popups_shelf", "all" }) do
-                out[#out + 1] = radio(FLASH_NAMES[lv], function() return flashLevel() == lv end, function() setFlash(lv) end)
-            end
-            out[#out + 1] = {
-                text = FLASH_NAMES.custom,
-                radio = true,
-                checked_func = function() return flashLevel() == "custom" end,
-                enabled_func = function() return false end,
-                separator = true,
-            }
-            out[#out + 1] = {
-                text_func = function()
-                    local n = tonumber(cfg.flash_hero_every) or 1
-                    return n <= 1 and _("Hero Flash: Every Change") or T(_("Hero Flash: Every %1th Change"), n)
-                end,
-                help_text = _("How often the hero flashes when it shows another book (with Flash: Everything). Every Change cleans every time but each tap waits for the flash; every 4th or 6th keeps most taps quick."),
-                enabled_func = function() return cfg.flash_hero end,
-                sub_item_table_func = function()
-                    local t = {}
-                    for _j, n in ipairs({ 1, 4, 6 }) do
-                        t[#t + 1] = radio(n == 1 and _("Every Change") or T(_("Every %1th Change"), n),
-                            function() return (tonumber(cfg.flash_hero_every) or 1) == n end,
-                            function() cfg.flash_hero_every = n end)
-                    end
-                    return t
-                end,
-            }
-            return out
-        end,
-    }
-end
-
 local function nextSeriesMenu()
     local function mode()
         if not cfg.next_in_series then return "off" end
@@ -447,21 +410,6 @@ end
 
 -- 1.3.8: Download / Remove buttons and the Sync icon as one switch. Each 1.x switch is
 -- kept as it was; it shows on when either was on, and turning it on or off sets both.
-local function heroButtonsToggle()
-    return {
-        text = _("Hero Buttons"),
-        help_text = _("On the hero of a BookOrbit book: Download (Queue with Wi-Fi off) and Open In BookOrbit for one not on the device; small Remove From Device, Open In BookOrbit and Sync icons for one that is."),
-        checked_func = function() return (cfg.hero_pills or cfg.hero_sync) and true or false end,
-        keep_menu_open = true,
-        callback = function()
-            local on = not (cfg.hero_pills or cfg.hero_sync)
-            cfg.hero_pills, cfg.hero_sync = on, on
-            saveConfig()
-            rebuildShelf()
-        end,
-    }
-end
-
 local function group(label, items, help)
     return { text = label, help_text = help, sub_item_table = items }
 end
@@ -481,11 +429,11 @@ Tap a book on the device to open it. Tap one that isn't to see it in the hero (D
 • Queue: books waiting to download. A reading status waiting for Wi-Fi shows on the book; Don't Send in its Reading Status drops it.
 • Return To: which shelf Bookshelf opens on after you close a book.
 • Search BookOrbit: search your BookOrbit library from Bookshelf's search.]]) },
-    { _("Book Page"), _([[Hold a book (or pick Book Page from a book's menu) for its page. A book on this Kobo: hold it for Bookshelf's book menu, then Book Page.
+    { _("Book Page"), _([[Hold a book (or pick Book Page from a book's menu) for its page. A book on this device: hold it for Bookshelf's book menu, then Book Page.
 
 • Top: Bulk Download, Bulk Remove, Help; where the book is and free space; X closes it.
 • Beside the cover: Download / Open, Reading Status / Collection, BookOrbit / Remove. A tall book has them under the cover.
-• The status line: Reading, progress, and when it was last read (this Kobo's history or BookOrbit's). A book finished on this Kobo shows when.
+• The status line: Reading, progress, and when it was last read (this device's history or BookOrbit's). A book finished on this device shows when.
 • Tap the title for all of it, tap the description to read it all.
 • The bottom: the series, more by the author, or similar books. Similar books are one tap away (Similar ›, or swipe left past the series / More by); ‹ Series or a swipe right goes back. Covers show their status (Read, On Hold 30%…) and On device / Queued.
 • BookOrbit opens over the page; closing it comes back here. Sleep closes the page.]]) },
@@ -503,14 +451,26 @@ Check For New Books: when it looks for new books by itself: on Wi-Fi connect, on
 Build / Rebuild Genres runs in the background and carries on after sleep.]]) },
     { _("Look, Footer And Flashing"), _([[• Hero Buttons and their size: the hero's Download / Status / BookOrbit and the round icons.
 • Cover Marks: the Not On Device mark and the Queue clock; Mark Style picks how they look.
-• Flash: how often the screen does a full refresh (Off, Popups, Popups + Shelf Pages, Everything).
+• Colour: on, the buttons, the popups' sections, the Book Page's boxes and Settings are in colour; off (the default), everything is plain. Charts and rings keep their colours.
+• Colour Theme: the colours used (Vibrant, Pastel, Ocean, …, or your own).
+• Popup Style: the popups' edge: Standard, Rainbow or Solid (one colour you pick).
+• Screen Flashes: how each kind of screen refreshes to clear ghosting (Book Page, its changes, Hero, Popups, Shelf Pages, Stats Page, its changes): No Flash, Quick Flash or Full Flash.
+• Settings from anywhere: More ▾ › Settings on the Book Page opens the same Settings window. Groups on the left, their settings on the right; hold one for what it does.
+• A switch with a › has settings: tap its box to turn it on or off, tap its words for its settings.
 • Footer: the critter and what it says, the Close X, and the Home button.]]) },
     { _("Something's Wrong"), _([[• Shelves empty: check BookOrbit's sign-in and Wi-Fi, then Sync. Saved lists still show offline.
 • A book missing: Sync, or Offline › Update Now.
 • Slow or odd: Advanced › Diagnostics writes what OrbitShelf does to crash.log for 30 minutes after each start (off by itself after 3 days). Send crash.log.
 • Clean Up Cache frees cover space; covers come back when shown.]]) },
     -- "What's New": newest version first; older versions stay below
-    { _("What's New"), _([[2.0
+    { _("What's New"), _([[2.2
+• Reading Stats (Books › Book Page: Reading Stats): Book | Stats | All Time at the top of the Book Page. Stats: one book's time, days, pace, calendar, chapters, moments, rewards (ReadMastery), X-Ray (or KOAssistant's) and Glimpse's pictures, spoiler-free. All Time: all your reading, with Your Year (its ring and its shelf: tap a spine for that book). From this Kobo or from BookOrbit; what's seen once works offline, and BookOrbit Account › Save All Stats For Offline saves it all at once.
+• Settings is a window: groups on the left, settings on the right, open until ✕.
+• Look: Colour (off: everything plain), Colour Theme, Popup Style (Standard, Rainbow or Solid) and Screen Flashes for each kind of screen.
+• More ▾ on the Book Page: sync, link, highlights, bookmarks, X-Ray and Manage Downloads in one popup.
+• Downloads › Book Type for read-along books (text only, with narration, both, or as BookOrbit).
+
+2.0
 • The Book Page: everything about a book on one page.
 • The Queue: downloads and reading statuses wait for Wi-Fi.
 • Up Next shelf, Similar books, status on covers, finished dates.
@@ -559,7 +519,169 @@ local function helpMenu()
             end,
         }
     end
+    -- 2.2.0: Quick Setup again, first
+    table.insert(sub, 1, { text = _("Quick Setup"), keep_menu_open = true, help_text = _("The main picks in one popup: Hold A Book Opens, Reading Stats, Colour, Popup Style, Cover Marks, Hero Buttons, Footer Critter."),
+        callback = function() if O.quickSetup then O.quickSetup() end end })
     return { text = _("Help"), help_text = _("How OrbitShelf works, one topic at a time."), sub_item_table = sub }
+end
+
+-- ---- 2.1.18 (TK): the menu regrouped -------------------------------------------------
+-- Groups A to Z (Help last). In each: the switches first, A to Z, then the rest A to Z.
+-- A switch with settings of its own is one row: tap its box to turn it on or off, tap
+-- its words for its settings (when it's off, the words turn it on). The API key is
+-- its own group, BookOrbit Account. Look › Screen Flashes replaces Flash.
+
+-- a switch that has its own settings. get(): on?; set(on, touchmenu); sub(): its rows
+local function switchWith(label, help, get, set, sub, enabled_func)
+    return {
+        text = label,
+        help_text = help and (help .. "\n\n" .. _("Tap the box to turn it on or off; tap the words for its settings.")) or nil,
+        checked_func = get,
+        enabled_func = enabled_func,
+        keep_menu_open = true,
+        checkmark_callback = function() set(not get()) end,
+        -- reached only when it's off (no rows then): the words turn it on
+        callback = function(touchmenu) set(not get(), touchmenu) end,
+        sub_item_table_func = function()
+            if not get() then return nil end
+            return sub()
+        end,
+    }
+end
+
+-- a group: switches first, then a line, then the rest (each list already A to Z)
+local function sorted(switches, rest)
+    local out = {}
+    for _i, it in ipairs(switches or {}) do out[#out + 1] = it end
+    if #out > 0 and rest and #rest > 0 then out[#out].separator = true end
+    for _i, it in ipairs(rest or {}) do out[#out + 1] = it end
+    return out
+end
+
+-- Look › Screen Flashes: one choice per kind of screen
+local FLASH_WORDS = { ui = _("No Flash"), flashui = _("Quick Flash"), full = _("Full Flash") }
+local function flashChoice(kind, label, help)
+    return {
+        text_func = function() return T(_("%1: %2"), label, FLASH_WORDS[O.flash and O.flash(kind) or "ui"]) end,
+        help_text = help,
+        sub_item_table_func = function()
+            local out = {}
+            for _i, m in ipairs({ "ui", "flashui", "full" }) do
+                out[#out + 1] = radio(FLASH_WORDS[m], function() return (O.flash and O.flash(kind) or "ui") == m end, function()
+                    cfg["flash_" .. kind] = m
+                    -- the popups from before the sheets (Book Description, the hold and download
+                    -- menus, Bookshelf's book menu and shelf editor) follow Popups too
+                    if kind == "popup" then
+                        for _j, k in ipairs(FLASH_POPUPS) do cfg[k] = m ~= "ui" end
+                        pcall(O.hookPopupFlash)
+                    end
+                end)
+            end
+            return out
+        end,
+    }
+end
+
+local function screenFlashesMenu()
+    local hero_names = { [0] = _("No Flash"), [1] = _("Every Change"), [4] = _("Every 4th Change"), [6] = _("Every 6th Change") }
+    local function heroNow() return cfg.flash_hero and math.max(1, tonumber(cfg.flash_hero_every) or 1) or 0 end
+    return {
+        text = _("Screen Flashes"),
+        help_text = _("How each kind of screen refreshes, to clear e-ink ghosting: No Flash, Quick Flash (a quick blink, the popup only) or Full Flash (the whole screen). Changes: another book or Series ↔ Similar on the Book Page, a tile, card, month or the Device | BookOrbit switch on the stats page."),
+        sub_item_table_func = function()
+            return {
+                flashChoice("bookpage", _("Book Page"), _("The Book Page opening and closing. Full Flash by default.")),
+                flashChoice("bookpage_change", _("Book Page Changes"), _("Another book on the Book Page, Series ↔ Similar, a strip's swipe. Quick Flash by default.")),
+                {
+                    text_func = function() return T(_("Hero: %1"), hero_names[heroNow()] or hero_names[1]) end,
+                    help_text = _("The hero showing another book: a quick flash every time, or every 4th or 6th time so most taps stay quick."),
+                    sub_item_table_func = function()
+                        local out = {}
+                        for _i, n in ipairs({ 0, 1, 4, 6 }) do
+                            out[#out + 1] = radio(hero_names[n], function() return heroNow() == n end, function()
+                                cfg.flash_hero = n > 0
+                                if n > 0 then cfg.flash_hero_every = n end
+                            end)
+                        end
+                        return out
+                    end,
+                },
+                flashChoice("popup", _("Popups"), _("OrbitShelf's popups opening and closing (More, Manage Downloads, a book's popup, Reading Status, …) and the older ones (Book Description, Bookshelf's book menu and shelf editor). Quick Flash by default.")),
+                {
+                    text_func = function() return T(_("Shelf Pages: %1"), cfg.flash_shelf and FLASH_WORDS.flashui or FLASH_WORDS.ui) end,
+                    help_text = _("Every shelf page turn in Bookshelf."),
+                    sub_item_table_func = function()
+                        return {
+                            radio(FLASH_WORDS.ui, function() return not cfg.flash_shelf end, function() cfg.flash_shelf = false end),
+                            radio(FLASH_WORDS.flashui, function() return cfg.flash_shelf and true or false end, function() cfg.flash_shelf = true end),
+                        }
+                    end,
+                },
+                flashChoice("stats", _("Stats Page"), _("The stats page opening and closing. Full Flash by default.")),
+                flashChoice("stats_change", _("Stats Page Changes"), _("A tile or card, a month, Your Year, the Device | BookOrbit switch. Full Flash by default.")),
+            }
+        end,
+    }
+end
+
+local function radioList(opts, get, set)
+    local out = {}
+    for _i, o in ipairs(opts) do
+        out[#out + 1] = radio(o[2], function() return get() == o[1] end, function() set(o[1]) end)
+    end
+    return out
+end
+
+-- 2.1.33 (TK): Save All Stats For Offline. Only by hand, from here: every book you've
+-- read in BookOrbit and your years, fetched now and saved (otherwise each is saved the
+-- first time you look at it)
+local STATS_SAVED_KEY = "orbitshelf_stats_offline_at"
+local function saveAllStatsItem()
+    return {
+        text_func = function()
+            local t = G_reader_settings and tonumber(G_reader_settings:readSetting(STATS_SAVED_KEY))
+            if not t then return _("Save All Stats For Offline") end
+            return T(_("Save All Stats For Offline: %1"), os.date("%b ", t) .. tonumber(os.date("%d", t)))
+        end,
+        help_text = _("Fetches BookOrbit's stats for every book you've read there, and Your Year / All Time, and saves them on this device, so they all open with Wi-Fi off. Without this, each book's stats are saved the first time you look at them. Needs Wi-Fi; it takes a little while (one look-up per book). It only runs when you tap it."),
+        enabled_func = function()
+            return O.Collections ~= nil and O.Collections.hasSaved ~= nil and O.Collections.hasSaved()
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu)
+            local okS, Stats = pcall(require, "orbitshelf_stats")
+            if not (okS and type(Stats) == "table" and Stats.saveAllOffline) then return end
+            if not isWifiOn() then
+                UIManager:show(require("ui/widget/infomessage"):new{ text = _("Turn Wi-Fi on first, then Save All Stats For Offline again."), timeout = 4 })
+                return
+            end
+            UIManager:show(require("ui/widget/confirmbox"):new{
+                text = _("Save all stats for offline?\n\nBookOrbit's stats for every book you've read there, and your years, are fetched now and saved on this device. It takes a little while."),
+                ok_text = _("Save"),
+                ok_callback = function()
+                    Stats.saveAllOffline(function(books, years, err)
+                        if books and err ~= "cancelled" and G_reader_settings then
+                            G_reader_settings:saveSetting(STATS_SAVED_KEY, os.time())
+                        end
+                        local msg
+                        if not books then msg = tostring(err or _("Couldn't save the stats."))
+                        else msg = T(_("Saved for offline: %1 books, %2 years."), books, years or 0) end
+                        UIManager:show(require("ui/widget/infomessage"):new{ text = msg, timeout = 4 })
+                        if touchmenu then touchmenu:updateItems() end
+                    end)
+                end,
+            })
+        end,
+    }
+end
+
+-- 2.1.34 (TK): Look › Popup Style: Rainbow, Solid (a colour of your choice) or Standard
+local SOLID_ORDER = { "blue", "gold", "green", "orange", "pink", "purple", "red", "teal" }
+local SOLID_NAMES = { blue = _("Blue"), gold = _("Gold"), green = _("Green"), orange = _("Orange"), pink = _("Pink"),
+    purple = _("Purple"), red = _("Red"), teal = _("Teal") }
+local function popupStyle()
+    local st = cfg.popup_style
+    return (st == "rainbow" or st == "solid") and st or "standard"
 end
 
 local function menuItems()
@@ -570,257 +692,230 @@ local function menuItems()
     elseif not bookOrbitSignedIn() then
         items[#items + 1] = { text = _("Sign in to BookOrbit first"), enabled_func = function() return false end, separator = true }
     end
-
-    -- Shelves
-    local return_to = {
-        text_func = function()
-            local id = cfg.return_shelf
-            if not id then return _("Return To: Bookshelf's Choice") end
-            return T(_("Return To: %1"), O.shelfLabel(id) or id)
-        end,
-        help_text = _("Which shelf Bookshelf shows when it opens or when you close a book. Bookshelf's Choice keeps whatever shelf you were on (Bookshelf's own behaviour); pick a shelf to always come back to it."),
-        enabled_func = function() return getBookshelf() ~= nil end,
-        sub_item_table_func = function()
-            local out = {{
-                text = _("Bookshelf's Choice (last shelf)"),
-                radio = true,
-                checked_func = function() return not cfg.return_shelf end,
-                callback = function() cfg.return_shelf = false saveConfig() end,
-            }}
-            for _i, t in ipairs(O.shelfList()) do
-                out[#out + 1] = {
-                    text = t.label,
-                    radio = true,
-                    checked_func = function() return cfg.return_shelf == t.id end,
-                    callback = function()
-                        cfg.return_shelf = t.id
-                        saveConfig()
-                        pcall(O.hookReturnShelf)
-                    end,
-                }
-            end
-            return out
-        end,
-    }
-    items[#items + 1] = group(_("Shelves"), {
-        toggle("use_bookorbit", _("Use BookOrbit In Bookshelf"),
-            _("Adds a BookOrbit shelf source to Bookshelf: Library, Recently added, Recently read, Series, Authors, Genres, Queue and Collections, books not on the device included."),
-            function()
-                if cfg.use_bookorbit then registerSource() else unregisterSource() end
-            end, bo_ok),
-        toggle("auto_rewrite_stock", _("Rewrite Stock Series / Authors / Genres"),
-            _("Points Bookshelf's own Series, Authors, Genres, Recent and Latest chips at BookOrbit. Off puts the stock chips back."),
-            function()
-                pcall(applyAutoRewrite)
-                local bs = getBookshelf()
-                if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
-            end, function() return cfg.use_bookorbit and bookOrbitInstalled() end),
-        return_to,
-        toggle("search_bookorbit", _("Search BookOrbit"),
-            _("Bookshelf's search looks in your BookOrbit library instead of the books on the device. Results open like a folder; back returns to where you were. With Wi-Fi off it searches the saved library list (title, author, series, genres). Off by default."),
-            nil),
-    })
-
-    -- Books
-    items[#items + 1] = group(_("Books"), {
-        {
-            text_func = function()
-                return T(_("Hold A Book Opens: %1"), cfg.hold_opens == "page" and _("Book Page") or _("Quick Menu"))
-            end,
-            help_text = _("Holding a BookOrbit book that isn't on the device. Quick Menu (the default): the small menu with Download, Open In BookOrbit, Book Page and More… (Add To Collection, Reading Status, Bulk Download). Book Page: one full page with the cover, details, status, all the buttons, the description, the series in order and more by the author (or similar books); it works offline from what's saved."),
-            sub_item_table_func = function()
-                return {
-                    radio(_("Quick Menu"), function() return (cfg.hold_opens or "menu") == "menu" end, function() cfg.hold_opens = "menu" end),
-                    radio(_("Book Page"), function() return cfg.hold_opens == "page" end, function() cfg.hold_opens = "page" end),
-                }
-            end,
-        },
-        nextSeriesMenu(),
-        {
-            text_func = function()
-                if O.Collections and O.Collections.hasSaved and O.Collections.hasSaved() then
-                    return _("BookOrbit Sign-In · API key active")
-                end
-                return _("BookOrbit Sign-In")
-            end,
-            help_text = _("Add To Collection uses a BookOrbit API key (Settings > You > API keys on the website, Read and write). The key is saved on this device encrypted. Easiest entry: Create API Key File, paste over USB, then Add To Collection or Set API Key… — the temp file is deleted. Shared with BookOrbit Tweaks when both are installed."),
-            sub_item_table = {
-                {
-                    text = _("Create API Key File"),
-                    help_text = _("Writes koreader/orbitshelf_api_key.txt (over USB). Paste your bok_ key on the marked line, then use Add To Collection or Set API Key… — the file is imported and deleted."),
-                    callback = function()
-                        if O.Collections and O.Collections.writeTempKeyFile then
-                            O.Collections.writeTempKeyFile()
-                        end
-                    end,
-                },
-                {
-                    text_func = function()
-                        if O.Collections and O.Collections.hasSaved and O.Collections.hasSaved() then
-                            return _("API Key Active")
-                        end
-                        return _("Set API Key…")
-                    end,
-                    help_text = _("When a key is saved: shows active. To change it, Forget first. When none: paste or type, or use Create API Key File over USB."),
-                    callback = function()
-                        if O.Collections and O.Collections.setKey then
-                            local client = O.boApiClient and O.boApiClient()
-                            O.Collections.setKey(client)
-                        end
-                    end,
-                },
-                {
-                    text = _("Forget Saved API Key"),
-                    help_text = _("Removes the API key from this device (encrypted). Shared with BookOrbit Tweaks. After this, Create API Key File or Set API Key… again."),
-                    enabled_func = function() return O.Collections ~= nil and O.Collections.hasSaved() end,
-                    callback = function() O.Collections.forget() end,
-                },
-                {
-                    text = _("About The API Key"),
-                    keep_menu_open = true,
-                    callback = function() O.Collections.about() end,
-                },
-            },
-        },
-    })
-
-    -- Downloads (the Queue)
-    if O.Queue then
-        local q = O.Queue.menu()
-        items[#items + 1] = {
-            text = _("Downloads"),
-            help_text = q.help_text,
-            sub_item_table_func = function()
-                local sub = q.sub_item_table_func()
-                table.insert(sub, 1, { text_func = q.text_func, enabled_func = function() return false end })
-                -- Book Type: how a read-along EPUB (with narration) downloads
-                local ra_names = {
-                    text = _("Text Only"), narration = _("With Narration"),
-                    both = _("Both"), bookorbit = _("Same As BookOrbit"),
-                }
-                table.insert(sub, 2, {
-                    text_func = function()
-                        return T(_("Book Type: %1"), ra_names[cfg.readalong_download] or ra_names.text)
-                    end,
-                    help_text = _([[Which kind of file a read-along book (an EPUB with the book's narration in it) downloads as. BookOrbit sends it without the narration unless asked.
-
-Text Only: the book without the narration, small (what OrbitShelf has always done).
-With Narration: the book with its audio. Much bigger; KOReader itself doesn't play it — for an app that plays EPUB narration.
-Both: the text-only copy, plus one with narration beside it named "… - With Narration". Removing the book removes both.
-Same As BookOrbit: whatever this device is set to under BookOrbit's own EPUB delivery.
-
-A book without narration downloads as the regular EPUB. Applies to Book Page, hero, Bulk Download and the Queue.]]),
-                    sub_item_table_func = function()
-                        local out = {}
-                        for _i, k in ipairs({ "text", "narration", "both", "bookorbit" }) do
-                            out[#out + 1] = {
-                                text = ra_names[k],
-                                radio = true,
-                                checked_func = function() return (cfg.readalong_download or "text") == k end,
-                                callback = function()
-                                    cfg.readalong_download = k
-                                    O.saveConfig()
-                                end,
-                            }
-                        end
-                        return out
-                    end,
-                })
-                -- 1.3.24: Remove Finished Books
-                local at = 3
-                table.insert(sub, at, {
-                    text = _("Remove Finished Books…"),
-                    help_text = _("Removes the BookOrbit books on this device that are finished (KOReader's own status, or Read / Skimmed in BookOrbit) and that you haven't opened here for the time below. It lists them and asks first. They stay in BookOrbit."),
-                    callback = function() O.removeFinishedBooks() end,
-                })
-                table.insert(sub, at + 1, {
-                    text_func = function()
-                        local d = tonumber(cfg.finished_days) or 30
-                        return d > 0 and T(_("Not Opened For: %1 Days"), d) or _("Not Opened For: Any Time")
-                    end,
-                    help_text = _("Remove Finished Books only offers books you haven't opened on this device for this long. Any Time offers every finished book."),
-                    separator = true,
-                    sub_item_table_func = function()
-                        local out = {}
-                        for _i, d in ipairs({ 0, 7, 30, 90 }) do
-                            out[#out + 1] = {
-                                text = d > 0 and T(_("%1 Days"), d) or _("Any Time"),
-                                radio = true,
-                                checked_func = function() return (tonumber(cfg.finished_days) or 30) == d end,
-                                callback = function()
-                                    cfg.finished_days = d
-                                    O.saveConfig()
-                                end,
-                            }
-                        end
-                        return out
-                    end,
-                })
-                return sub
-            end,
-        }
-    end
-
-    -- Look
-    local hero_size = {
-        text_func = function()
-            local names = { small = _("Small"), medium = _("Medium"), large = _("Large") }
-            return T(_("Hero Button Size: %1"), names[cfg.hero_button_size] or names.small)
-        end,
-        help_text = _("Size of the hero's Download / Open In BookOrbit buttons and the round Remove / Open / Sync icons. Small leaves the most room for the description."),
-        enabled_func = function() return cfg.hero_pills or cfg.hero_sync end,
-        sub_item_table_func = function()
-            local out = {}
-            for _i, opt in ipairs({ { "small", _("Small") }, { "medium", _("Medium") }, { "large", _("Large") } }) do
-                out[#out + 1] = {
-                    text = opt[2], radio = true, keep_menu_open = true,
-                    checked_func = function() return (cfg.hero_button_size or "small") == opt[1] end,
-                    callback = function()
-                        cfg.hero_button_size = opt[1]
-                        saveConfig()
-                        rebuildShelf()
-                    end,
-                }
-            end
-            return out
-        end,
-        separator = true,
-    }
     local function clearPages()
         local bs = getBookshelf()
         if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
         rebuildShelf()
     end
-    items[#items + 1] = group(_("Look"), {
-        heroButtonsToggle(),
-        hero_size,
-        toggle("mark_not_on_device", _("Cover Marks"),
-            _("A small mark on the bottom-left of a BookOrbit cover whose book isn't on the device (BookOrbit's download mark), so you can see at a glance what's still to download. A book in the Queue shows a clock there either way. Reading status and progress use Bookshelf's own badges. Covers view only. Off by default."),
-            function()
-                O.Extras.hookNotOnDeviceMark()
-                clearPages()
-            end),
+
+
+    -- BookOrbit Account (the API key; was Books › BookOrbit Sign-In)
+    items[#items + 1] = {
+        text_func = function()
+            if O.Collections and O.Collections.hasSaved and O.Collections.hasSaved() then
+                return _("BookOrbit Account · API key active")
+            end
+            return _("BookOrbit Account")
+        end,
+        help_text = _("The BookOrbit API key OrbitShelf uses for Add To Collection, BookOrbit's stats and Your Year (Settings > You > API keys on the website, Read and write). Saved on this device encrypted, shared with BookOrbit Tweaks. Easiest: Create API Key File, paste over USB, then Set API Key… (the file is deleted)."),
+        sub_item_table = {
+            {
+                text = _("About The API Key"),
+                keep_menu_open = true,
+                callback = function() O.Collections.about() end,
+            },
+            {
+                text = _("Create API Key File"),
+                help_text = _("Writes koreader/orbitshelf_api_key.txt (over USB). Paste your bok_ key on the marked line, then use Add To Collection or Set API Key… — the file is imported and deleted."),
+                callback = function()
+                    if O.Collections and O.Collections.writeTempKeyFile then O.Collections.writeTempKeyFile() end
+                end,
+            },
+            {
+                text = _("Forget Saved API Key"),
+                help_text = _("Removes the API key from this device (encrypted). Shared with BookOrbit Tweaks. After this, Create API Key File or Set API Key… again."),
+                enabled_func = function() return O.Collections ~= nil and O.Collections.hasSaved() end,
+                callback = function() O.Collections.forget() end,
+            },
+            {
+                text_func = function()
+                    if O.Collections and O.Collections.hasSaved and O.Collections.hasSaved() then return _("API Key Active") end
+                    return _("Set API Key…")
+                end,
+                help_text = _("When a key is saved: shows active. To change it, Forget first. When none: paste or type, or use Create API Key File over USB."),
+                callback = function()
+                    if O.Collections and O.Collections.setKey then
+                        O.Collections.setKey(O.boApiClient and O.boApiClient())
+                    end
+                end,
+            },
+            saveAllStatsItem(),
+        },
+    }
+
+    -- Books
+    items[#items + 1] = group(_("Books"), sorted({
+        toggle("bookpage_stats", _("Book Page: Reading Stats"),
+            _("The Book Page's Book | Stats switch: one screen of tiles (the book and where you are, time, days, pace, time left, Day by Day, this week, your reads, moments, chapters, pages you came back to, X-Ray, habits); tap a tile for its own page, and Your Year. From KOReader's statistics on this device, saved when a book closes; a book not read here shows BookOrbit's (saved per book). Off by default."),
+            nil),
+    }, {
         {
             text_func = function()
-                return T(_("Mark Style: %1"), cfg.mark_style == "badge" and _("Badge") or _("Auto Black / White"))
+                return T(_("Hold A Book Opens: %1"), cfg.hold_opens == "page" and _("Book Page") or _("Quick Menu"))
             end,
-            help_text = _("How the cover mark looks. Auto Black / White: black on a light cover, white on a dark one, with a thin outline so it reads on a busy corner. Badge: on a small round disc in Bookshelf's badge colours, like the page count. Auto by default."),
-            enabled_func = function() return cfg.mark_not_on_device end,
+            help_text = _("Holding a BookOrbit book that isn't on the device. Quick Menu (the default): the small popup with Download, Open In BookOrbit, Book Page and More. Book Page: the full page with the cover, details, buttons, files, the description and the series / more by the author; it works offline from what's saved."),
             sub_item_table_func = function()
                 return {
-                    radio(_("Auto Black / White"), function() return (cfg.mark_style or "auto") == "auto" end,
-                        function() cfg.mark_style = "auto" clearPages() end),
-                    radio(_("Badge"), function() return cfg.mark_style == "badge" end,
-                        function() cfg.mark_style = "badge" clearPages() end),
+                    radio(_("Book Page"), function() return cfg.hold_opens == "page" end, function() cfg.hold_opens = "page" end),
+                    radio(_("Quick Menu"), function() return (cfg.hold_opens or "menu") == "menu" end, function() cfg.hold_opens = "menu" end),
                 }
             end,
-            separator = true,
         },
-        flashMenu(),
-    })
+        nextSeriesMenu(),
+    }))
 
-    -- Offline (Offline Library + genres)
+    -- Downloads: Book Type, the Queue, Remove Finished Books
+    local ra_names = { text = _("Text Only"), narration = _("With Narration"), both = _("Both"), bookorbit = _("Same As BookOrbit") }
+    local downloads = {
+        {
+            text_func = function() return T(_("Book Type: %1"), ra_names[cfg.readalong_download] or ra_names.text) end,
+            help_text = _([[Which kind of file a read-along book (an EPUB with the book's narration in it) downloads as, for every book. A book's own Files line on its Book Page can change it for that book only.
+
+Text Only: the book without the narration, small.
+With Narration: the book with its audio. Much bigger; KOReader itself doesn't play it.
+Both: the text-only copy, plus one with narration beside it. Removing the book removes both.
+Same As BookOrbit: whatever this device is set to under BookOrbit's own EPUB delivery.]]),
+            sub_item_table_func = function()
+                return radioList({ { "both", ra_names.both }, { "bookorbit", ra_names.bookorbit }, { "text", ra_names.text },
+                    { "narration", ra_names.narration } }, function() return cfg.readalong_download or "text" end,
+                    function(v) cfg.readalong_download = v end)
+            end,
+        },
+    }
+    if O.Queue then
+        local q = O.Queue.menu()
+        downloads[#downloads + 1] = {
+            text_func = function() return q.text_func() end,
+            help_text = q.help_text,
+            sub_item_table_func = q.sub_item_table_func,
+        }
+    end
+    downloads[#downloads + 1] = {
+        text = _("Remove Finished Books"),
+        help_text = _("Removes the BookOrbit books on this device that are finished (KOReader's own status, or Read / Skimmed in BookOrbit) and that you haven't opened here for a while. It lists them and asks first. They stay in BookOrbit."),
+        sub_item_table_func = function()
+            return {
+                {
+                    text_func = function()
+                        local d = tonumber(cfg.finished_days) or 30
+                        return d > 0 and T(_("Not Opened For: %1 Days"), d) or _("Not Opened For: Any Time")
+                    end,
+                    help_text = _("Remove Now… only offers books you haven't opened on this device for this long. Any Time offers every finished book."),
+                    sub_item_table_func = function()
+                        local out = {}
+                        for _i, d in ipairs({ 0, 7, 30, 90 }) do
+                            out[#out + 1] = radio(d > 0 and T(_("%1 Days"), d) or _("Any Time"),
+                                function() return (tonumber(cfg.finished_days) or 30) == d end, function() cfg.finished_days = d end)
+                        end
+                        return out
+                    end,
+                },
+                { text = _("Remove Now…"), callback = function() O.removeFinishedBooks() end },
+            }
+        end,
+    }
+    items[#items + 1] = { text = _("Downloads"), help_text = O.Queue and O.Queue.menu().help_text or nil,
+        sub_item_table = downloads }
+
+    -- Footer
+    local function critterSub()
+        return {
+            critterSays("critter_say_page", _("Page")),
+            critterSays("critter_say_recs", _("Picks")),
+            critterSays("critter_say_quotes", _("Sayings")),
+            critterSays("critter_say_witty", _("Witty")),
+        }
+    end
+    items[#items + 1] = group(_("Footer"), sorted({
+        switchWith(_("Footer Critter"),
+            _("Your SimpleUI critter in place of the page numbers at the bottom. Tap it for another line; the left and right edges still turn the page. Its settings: what it says."),
+            function() return cfg.footer_critter and true or false end,
+            function(on, tm)
+                cfg.footer_critter = on
+                saveConfig()
+                hookFooterCritter()
+                rebuildShelf()
+                if tm then tm:updateItems() end
+            end, critterSub),
+    }, { closeXMenu(), homeMenu() }))
+
+    -- Look
+    local hero_size_rows = function()
+        return radioList({ { "large", _("Large") }, { "medium", _("Medium") }, { "small", _("Small") } },
+            function() return cfg.hero_button_size or "small" end,
+            function(v) cfg.hero_button_size = v rebuildShelf() end)
+    end
+    local mark_rows = function()
+        return radioList({ { "auto", _("Auto Black / White") }, { "badge", _("Badge") } },
+            function() return cfg.mark_style == "badge" and "badge" or "auto" end,
+            function(v) cfg.mark_style = v clearPages() end)
+    end
+    items[#items + 1] = group(_("Look"), sorted({
+        switchWith(_("Cover Marks"),
+            _("A small mark on the bottom-left of a BookOrbit cover whose book isn't on the device, and a clock on a queued one. Covers view only. Its settings: Mark Style (Auto Black / White, or Badge). Off by default."),
+            function() return cfg.mark_not_on_device and true or false end,
+            function(on, tm)
+                cfg.mark_not_on_device = on
+                saveConfig()
+                O.Extras.hookNotOnDeviceMark()
+                clearPages()
+                if tm then tm:updateItems() end
+            end, mark_rows),
+        switchWith(_("Hero Buttons"),
+            _("On the hero of a BookOrbit book: Download (Queue with Wi-Fi off) and Open In BookOrbit for one not on the device; small Remove, Open In BookOrbit and Sync icons for one that is. Its settings: Button Size."),
+            function() return (cfg.hero_pills or cfg.hero_sync) and true or false end,
+            function(on, tm)
+                cfg.hero_pills, cfg.hero_sync = on, on
+                saveConfig()
+                rebuildShelf()
+                if tm then tm:updateItems() end
+            end, hero_size_rows),
+        -- 2.1.36 (TK): off is standard
+        toggle("pill_colours", _("Colour"),
+            _("Colour on a colour screen: the pill buttons (Sync, Show, Book | Stats | All Time, Your Year, …), the popups' sections, the Book Page's boxes and this window, each in its own colour (or Solid's with Popup Style Solid), whatever the edge. Off: everything standard, no colours: plain pills (black with white words, white with black at night), sections outlined. The edge is still Popup Style's, and charts and rings keep their colours. Off by default.")),
+    }, {
+        {
+            text_func = function() return T(_("Colour Theme: %1"), O.Theme and O.Theme.name() or _("Vibrant")) end,
+            help_text = _("The colours of OrbitShelf's popups, the stats page and its rings, and the Book Page on a colour screen: Vibrant (as before), Pastel, Ocean, Sunset, Forest, Kobo Mono, or Custom (tap any colour to change it). Grey screens stay grey."),
+            keep_menu_open = true,
+            callback = function() if O.Theme then O.Theme.show() end end,
+        },
+        {
+            -- 2.1.23 (TK): the popups' edge. 2.1.34 (TK): Solid, one colour you pick
+            text_func = function()
+                local st = popupStyle()
+                if st == "solid" then return T(_("Popup Style: Solid · %1"), SOLID_NAMES[cfg.popup_colour] or SOLID_NAMES.blue) end
+                return T(_("Popup Style: %1"), st == "rainbow" and _("Rainbow") or _("Standard"))
+            end,
+            help_text = _("How OrbitShelf's popups (More, Manage Downloads, X-Ray, a book's popup, the stats page's popups, Settings, …) look on a colour screen. Rainbow: an edge in the 8 colours, a rainbow grab bar and the colour line under the title. Solid: the edge, the grab bar, the colour line and every pill button in one colour you pick (Solid Colour). Standard: a plain edge, no colour line. Grey screens stay plain."),
+            sub_item_table_func = function()
+                local out = radioList({ { "rainbow", _("Rainbow") }, { "solid", _("Solid") }, { "standard", _("Standard") } },
+                    popupStyle, function(v) cfg.popup_style = v end)
+                out[#out].separator = true
+                out[#out + 1] = {
+                    text_func = function() return T(_("Solid Colour: %1"), SOLID_NAMES[cfg.popup_colour] or SOLID_NAMES.blue) end,
+                    help_text = _("Solid's colour, from the Colour Theme's 8."),
+                    enabled_func = function() return popupStyle() == "solid" end,
+                    sub_item_table_func = function()
+                        local opts = {}
+                        for _i, n in ipairs(SOLID_ORDER) do opts[#opts + 1] = { n, SOLID_NAMES[n] } end
+                        return radioList(opts, function() return SOLID_NAMES[cfg.popup_colour] and cfg.popup_colour or "blue" end,
+                            function(v) cfg.popup_colour = v end)
+                    end,
+                }
+                return out
+            end,
+        },
+        screenFlashesMenu(),
+    }))
+
+    -- Offline: Keep Library Offline (with its settings), then the genres
     local off = offlineMenu().sub_item_table
+    local keep = off[1]
+    local off_rows = function()
+        -- the status first, then A to Z
+        return { off[2], off[4], off[5], off[3] }
+    end
     local genres_build = {
         text_func = function()
             local books = Genres.library() or {}
@@ -857,51 +952,197 @@ A book without narration downloads as the regular EPUB. Applies to Book Page, he
             })
         end,
     }
-    off[#off].separator = true
-    off[#off + 1] = genres_build
-    off[#off + 1] = genres_rebuild
-    items[#items + 1] = group(_("Offline"), off)
+    items[#items + 1] = group(_("Offline"), sorted({
+        switchWith(_("Keep Library Offline"), keep.help_text,
+            function() return cfg.offline_library and true or false end,
+            function(_on, tm) keep.callback(tm) if tm then tm:updateItems() end end,
+            off_rows, keep.enabled_func),
+    }, { genres_build, genres_rebuild }))
 
-    -- Footer
-    items[#items + 1] = group(_("Footer"), {
-        toggle("footer_critter", _("Footer Critter"),
-            _("Your SimpleUI critter in place of the page numbers at the bottom. Tap it for another line; the left and right edges still turn the page."),
-            function() hookFooterCritter() rebuildShelf() end),
-        {
-            text = _("Critter Says"),
-            enabled_func = function() return cfg.footer_critter end,
-            sub_item_table = {
-                critterSays("critter_say_page", _("Page")),
-                critterSays("critter_say_witty", _("Witty")),
-                critterSays("critter_say_recs", _("Picks")),
-                critterSays("critter_say_quotes", _("Sayings")),
-            },
-            separator = true,
-        },
-        closeXMenu(),
-        homeMenu(),
-    })
+    -- Shelves
+    local return_to = {
+        text_func = function()
+            local id = cfg.return_shelf
+            if not id then return _("Return To: Bookshelf's Choice") end
+            return T(_("Return To: %1"), O.shelfLabel(id) or id)
+        end,
+        help_text = _("Which shelf Bookshelf shows when it opens or when you close a book. Bookshelf's Choice keeps whatever shelf you were on (Bookshelf's own behaviour); pick a shelf to always come back to it."),
+        enabled_func = function() return getBookshelf() ~= nil end,
+        sub_item_table_func = function()
+            local out = { {
+                text = _("Bookshelf's Choice (last shelf)"),
+                radio = true,
+                checked_func = function() return not cfg.return_shelf end,
+                callback = function() cfg.return_shelf = false saveConfig() end,
+                separator = true,
+            } }
+            local list = {}
+            for _i, t in ipairs(O.shelfList()) do list[#list + 1] = t end
+            table.sort(list, function(x, y) return tostring(x.label) < tostring(y.label) end)
+            for _i, t in ipairs(list) do
+                out[#out + 1] = {
+                    text = t.label,
+                    radio = true,
+                    checked_func = function() return cfg.return_shelf == t.id end,
+                    callback = function()
+                        cfg.return_shelf = t.id
+                        saveConfig()
+                        pcall(O.hookReturnShelf)
+                    end,
+                }
+            end
+            return out
+        end,
+    }
+    items[#items + 1] = group(_("Shelves"), sorted({
+        toggle("auto_rewrite_stock", _("Rewrite Stock Series / Authors / Genres"),
+            _("Points Bookshelf's own Series, Authors, Genres, Recent and Latest chips at BookOrbit. Off puts the stock chips back."),
+            function()
+                pcall(applyAutoRewrite)
+                local bs = getBookshelf()
+                if bs and bs.sourceChanged then pcall(bs.sourceChanged, bs, SOURCE_ID) end
+            end, function() return cfg.use_bookorbit and bookOrbitInstalled() end),
+        toggle("search_bookorbit", _("Search BookOrbit"),
+            _("Bookshelf's search looks in your BookOrbit library instead of the books on the device. Results open like a folder; back returns to where you were. With Wi-Fi off it searches the saved library list (title, author, series, genres). Off by default."),
+            nil),
+        toggle("use_bookorbit", _("Use BookOrbit In Bookshelf"),
+            _("Adds a BookOrbit shelf source to Bookshelf: Library, Recently added, Recently read, Series, Authors, Genres, Queue and Collections, books not on the device included."),
+            function()
+                if cfg.use_bookorbit then registerSource() else unregisterSource() end
+            end, bo_ok),
+    }, { return_to }))
 
-    -- Advanced
-    items[#items + 1] = group(_("Advanced"), {
-        cleanUpCacheItem(),
+    -- Advanced: second to last, above Help (TK, Nov 22; the patch-pass order)
+    items[#items + 1] = group(_("Advanced"), sorted({
         toggle("diagnostics", _("Diagnostics"),
-            _("For troubleshooting: writes what OrbitShelf does (shelf loads, covers, downloads, hero, timings) to crash.log, tagged \"orbitshelf diag\", for 30 minutes after each start or after turning it on. Turns itself off after 3 days. Problems go to crash.log either way. Off by default."),
+            _("For troubleshooting: writes what OrbitShelf does (shelf loads, covers, downloads, hero, timings, how long each page takes) to crash.log, tagged \"orbitshelf diag\", for 30 minutes after each start or after turning it on. Turns itself off after 3 days. Problems go to crash.log either way. Also logs each BookOrbit look-up for Reading Stats (what was asked, how much came back) and Your Year shelf taps. Off by default."),
             function() if cfg.diagnostics then O.startDiag(true) end end),
-    })
-    -- 2.0.0: Help, last
-    items[#items + 1] = helpMenu()
+    }, { cleanUpCacheItem() }))
+
+    -- Help, last
+    local h = helpMenu()
+    if #items > 0 then items[#items].separator = true end
+    items[#items + 1] = h
     return items
+end
+O.menuItems = menuItems
+
+-- 2.2.0 (TK, mockup m7): Quick Setup. The main picks in one popup, each showing what you
+-- have now; a tap changes it at once (and saves it). Shown once (first start with BookOrbit
+-- shelves, or once after updating to 2.2, in place of the What's New note); Help › Quick
+-- Setup opens it again. Nothing changes unless you pick it.
+function O.quickSetup()
+    if not O.Sheet then return false end
+    local widget
+    local function onOff(key, after)
+        return { { _("Off"), function() return not cfg[key] end, function() cfg[key] = false end },
+                 { _("On"), function() return cfg[key] and true or false end, function() cfg[key] = true end }, after = after }
+    end
+    local function refreshShelf()
+        local bs = getBookshelf()
+        if bs and type(bs._pageCacheClear) == "function" then pcall(bs._pageCacheClear, bs) end
+        rebuildShelf()
+    end
+    local rows = {
+        { _("Hold A Book Opens"), _("What holding a book that isn't on this device opens"), {
+            { _("Quick Menu"), function() return (cfg.hold_opens or "menu") ~= "page" end, function() cfg.hold_opens = "menu" end },
+            { _("Book Page"), function() return cfg.hold_opens == "page" end, function() cfg.hold_opens = "page" end } } },
+        { _("Reading Stats"), _("Book | Stats | All Time on the Book Page"), onOff("bookpage_stats") },
+        { _("Colour"), _("Buttons, popup sections, the Book Page's boxes and Settings in colour"), onOff("pill_colours") },
+        { _("Popup Style"), _("The popups' edge"), {
+            { _("Standard"), function() return cfg.popup_style ~= "rainbow" and cfg.popup_style ~= "solid" end, function() cfg.popup_style = "standard" end },
+            { _("Rainbow"), function() return cfg.popup_style == "rainbow" end, function() cfg.popup_style = "rainbow" end },
+            { _("Solid"), function() return cfg.popup_style == "solid" end, function() cfg.popup_style = "solid" end } } },
+        { _("Cover Marks"), _("A small mark on covers of books not on this device"), onOff("mark_not_on_device", function()
+            if O.Extras and O.Extras.hookNotOnDeviceMark then pcall(O.Extras.hookNotOnDeviceMark) end
+            refreshShelf()
+        end) },
+        { _("Hero Buttons"), _("Download / Open In BookOrbit on the hero, small icons for books on the device"), {
+            { _("Off"), function() return not (cfg.hero_pills or cfg.hero_sync) end, function() cfg.hero_pills, cfg.hero_sync = false, false end },
+            { _("On"), function() return (cfg.hero_pills or cfg.hero_sync) and true or false end, function() cfg.hero_pills, cfg.hero_sync = true, true end },
+            after = rebuildShelf } },
+        { _("Footer Critter"), _("Your SimpleUI critter at the bottom of the shelf"), onOff("footer_critter", function()
+            pcall(hookFooterCritter)
+            rebuildShelf()
+        end) },
+    }
+    local spec
+    spec = function()
+        local sections = {}
+        for i = 1, #rows do
+            local r = rows[i]
+            local pills = {}
+            for j = 1, #r[3] do
+                local o = r[3][j]
+                pills[#pills + 1] = { text = o[1], fill = o[2](), keep = true, colour = "blue", callback = function()
+                    if o[2]() then return end
+                    o[3]()
+                    saveConfig()
+                    if r[3].after then pcall(r[3].after) end
+                    if widget then widget:rebuild(spec()) end
+                end }
+            end
+            sections[#sections + 1] = { title = r[1], colour = O.Sheet.CYCLE and O.Sheet.CYCLE[(i - 1) % #O.Sheet.CYCLE + 1] or "blue",
+                items = { { kind = "pills", list = pills } } } -- r[2]: what it is (kept short to fit one screen)
+        end
+        sections[#sections + 1] = { plain = true, items = { { kind = "pills", list = {
+            { text = _("Done"), fill = true, callback = function() end },
+        } } } }
+        return { title = T(_("OrbitShelf %1"), O.VERSION or ""),
+            subtitle = _("Nothing changes unless you pick it. All in Settings too."),
+            cancel = false, sections = sections }
+    end
+    widget = O.Sheet.show(spec())
+    return true
+end
+
+-- 2.1.18 (TK): the same menu as a popup over the Book Page (More ▾ › Settings), the way
+-- KOReader opens its own top menu
+function O.showSettingsMenu()
+    -- 2.1.33 (TK, mockup m1): the Settings window; KOReader's menu only if it can't open
+    if O.Settings and O.Settings.show then
+        local ok, shown = pcall(O.Settings.show, menuItems)
+        if ok and shown then return end
+        if not ok then O.logger.warn(O.TAG, "settings window:", tostring(shown)) end
+    end
+    local Screen = require("device").screen
+    local CenterContainer = require("ui/widget/container/centercontainer")
+    local TouchMenu = require("ui/widget/touchmenu")
+    local container = CenterContainer:new{ ignore = "height", dimen = Screen:getSize() }
+    local tab = menuItems()
+    tab.icon = "appbar.settings"
+    tab.text = _("OrbitShelf")
+    local menu = TouchMenu:new{ width = Screen:getWidth(), last_index = 1, tab_item_table = { tab }, show_parent = container }
+    menu.close_callback = function() UIManager:close(container) end
+    container[1] = menu
+    UIManager:show(container)
 end
 
 -- What's New, once, the first time a BookOrbit shelf shows after the update (not on a
 -- new install: only when BookOrbit shelves were already on). 2.0.0: about 2.0, with the
 -- regrouped settings' current values (1.3.8's note)
-local WHATS_NEW_ID = "2.0.0"
+-- 2.1.0: a short note about Reading Stats for anyone who already saw 2.0's
+local WHATS_NEW_ID = "2.2.0"
+local STATS_NOTE = _("New in 2.2: Reading Stats (Book | Stats | All Time at the top of the Book Page: turn it on in Settings › Books › Book Page: Reading Stats if it's off), Your Year, a Settings window, and Look › Colour, Colour Theme, Popup Style and Screen Flashes. Help › What's New has the rest.")
 function O.whatsNew()
-    if cfg.whats_new_seen == WHATS_NEW_ID or not cfg.use_bookorbit then return end
+    if not cfg.use_bookorbit then return end
+    -- 2.2.0: Quick Setup once, in place of the What's New note
+    if not cfg.setup_seen then
+        cfg.setup_seen, cfg.whats_new_seen = true, WHATS_NEW_ID
+        saveConfig()
+        UIManager:scheduleIn(1, function() pcall(O.quickSetup) end)
+        return
+    end
+    if cfg.whats_new_seen == WHATS_NEW_ID then return end
+    local saw_2_0 = cfg.whats_new_seen == "2.0.0" or cfg.whats_new_seen == "2.1.0"
     cfg.whats_new_seen = WHATS_NEW_ID
     saveConfig()
+    if saw_2_0 then
+        UIManager:scheduleIn(1, function()
+            UIManager:show(require("ui/widget/infomessage"):new{ text = _("OrbitShelf 2.2") .. "\n\n" .. STATS_NOTE })
+        end)
+        return
+    end
     local hero = (cfg.hero_pills or cfg.hero_sync) and _("on") or _("off")
     local close = not cfg.close_only_menu and _("Off") or (cfg.close_menu_side == "left" and _("Left")
         or cfg.close_menu_side == "right" and _("Right") or _("Bookshelf's Side"))
@@ -916,16 +1157,18 @@ function O.whatsNew()
         .. T(_("• Close X: %1"), close) .. "\n"
         .. T(_("• Home Button: %1"), cfg.home_button and _("on") or _("Off")) .. "\n"
         .. T(_("• Next Book In Series: %1"), nxt) .. "\n\n"
+        .. STATS_NOTE .. "\n\n"
         .. _("Nothing you set was changed.")
     UIManager:scheduleIn(1, function()
         UIManager:show(require("ui/widget/infomessage"):new{ text = text })
     end)
 end
 
+-- 2.1.33 (TK): Tools › OrbitShelf opens the Settings window (KOReader's menu closes first)
 local function menuItem()
     return {
         text = _("OrbitShelf"),
-        sub_item_table_func = menuItems,
+        callback = function() O.showSettingsMenu() end,
     }
 end
 

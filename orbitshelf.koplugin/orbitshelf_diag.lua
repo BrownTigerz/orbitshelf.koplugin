@@ -190,6 +190,59 @@ local stats = {
     mem_start = mem_kb(),
 }
 
+-- ---- speed (2.1.15, TK): how long OrbitShelf's own pages take ---------------------
+-- Each label: builds (the code making the page) and draws (its first paint on screen),
+-- count, average, slowest. The summary says what's slow and whether a cache would help.
+local speed = {}
+local speed_order = {}
+local function timed(label, ms)
+    local b = speed[label]
+    if not b then b = bucket() speed[label] = b speed_order[#speed_order + 1] = label end
+    add(b, ms)
+    if ms >= 250 then log("speed: %s took %d ms", label, ms) end
+end
+
+-- the bridge the plugin's files call around their heavy parts (O.perf(label, start_ms))
+O.perfNow = now_ms
+O.perf = function(label, t0)
+    if not on() or not t0 then return end
+    timed(label, now_ms() - t0)
+end
+
+-- what each slow part means, and whether keeping a copy (a cache) would make it faster
+local SPEED_HINTS = {
+    { "book page: build", 400, "The Book Page takes long to build. If 'book page: lists' is most of it, a saved index of the library by series and author (worked out when the shelf refreshes) would make it open faster." },
+    { "book page: lists", 250, "Finding the series / More by / Similar books is slow: a saved index (series and author → books) would help." },
+    { "book page: draw", 500, "Drawing the Book Page is slow: the covers. Smaller cover thumbnails kept for the page would help." },
+    { "stats: book data", 300, "Reading the book's stats from KOReader's statistics is slow. The book-close cache should make this fast after the book is closed once; if it stays slow, the cache isn't being used." },
+    { "stats page: build", 500, "Building the stats page is slow (the tiles). Nothing to cache: it's the drawing work." },
+    { "stats page: draw", 700, "Drawing the stats page is slow on this Kobo (colour fills). The rings and tiles could draw less detail." },
+    { "your year: load", 1500, "Your Year takes long to load. This Kobo's year is saved after the first time; BookOrbit's is saved for 30 minutes." },
+    { "popup: build", 200, "Popups build slowly." },
+    { "popup: draw", 300, "Popups draw slowly." },
+}
+
+local function speedSummary(hints)
+    if #speed_order == 0 then
+        write("speed: nothing timed (open a Book Page, its stats, a popup)")
+        return
+    end
+    table.sort(speed_order, function(a, b2) return speed[a].max > speed[b2].max end)
+    for _i, label in ipairs(speed_order) do
+        local b = speed[label]
+        write(string.format("speed: %-22s %3d times, avg %s ms, slowest %.0f ms", label, b.n, avg(b), b.max))
+    end
+    local slow = false
+    for _i, h in ipairs(SPEED_HINTS) do
+        local b = speed[h[1]]
+        if b and b.n > 0 and b.ms / b.n >= h[2] then
+            hints[#hints + 1] = string.format("%s (avg %s ms)", h[3], avg(b))
+            slow = true
+        end
+    end
+    write(slow and "cache verdict: see the hints below" or "cache verdict: not needed, everything timed is fast enough")
+end
+
 summary = function(why)
     write("---- summary (" .. tostring(why) .. ") ----")
     write(string.format("registerSource: %d, avg %s ms, max %.0f ms | refusals: %d",
@@ -209,6 +262,7 @@ summary = function(why)
     write(string.format("Lua memory: %.0f KB (was %.0f KB at start)", mem_kb(), stats.mem_start))
 
     local hints = {}
+    speedSummary(hints)
     if stats.register.n == 0 and not O.spec then
         hints[#hints + 1] = "BookOrbit source never registered: Bookshelf may load late, or Use BookOrbit is off / not signed in"
     end
@@ -808,6 +862,87 @@ end
 
 -- ---- minute heartbeat (via UIManager schedule, cancelled when idle) ------------
 
+-- wrap fn in t[name] to time it (once)
+local function timeFn(t, name, label)
+    if type(t) ~= "table" or type(t[name]) ~= "function" then return end
+    local key = "_orbitshelf_diag_t_" .. name
+    if t[key] then return end
+    t[key] = true
+    local orig = t[name]
+    t[name] = function(...)
+        if not on() then return orig(...) end
+        local t0 = now_ms()
+        local r = { pcall(orig, ...) }
+        timed(label, now_ms() - t0)
+        if not r[1] then
+            stats.errors = stats.errors + 1
+            log("ERROR %s failed: %s", label, tostring(r[2]))
+            error(r[2], 0)
+        end
+        return unpack(r, 2)
+    end
+end
+
+-- the first paint of a page OrbitShelf shows (its widget's orbitshelf_perf name)
+local function hookPaint()
+    local UIManager = require("ui/uimanager")
+    if UIManager._orbitshelf_diag_show then return end
+    UIManager._orbitshelf_diag_show = true
+    local orig = UIManager.show
+    UIManager.show = function(self, w, ...)
+        if on() and type(w) == "table" and type(w.orbitshelf_perf) == "string" and not rawget(w, "_orbitshelf_diag_paint") then
+            local label = w.orbitshelf_perf .. ": draw"
+            local paint = w.paintTo
+            w._orbitshelf_diag_paint = true
+            w.paintTo = function(me, ...)
+                if me._orbitshelf_diag_painted or not on() then return paint(me, ...) end
+                me._orbitshelf_diag_painted = true
+                local t0 = now_ms()
+                local r = { pcall(paint, me, ...) }
+                timed(label, now_ms() - t0)
+                if not r[1] then error(r[2], 0) end
+                return unpack(r, 2)
+            end
+        end
+        return orig(self, w, ...)
+    end
+end
+
+local function hookSpeed()
+    if O.BookPage then timeFn(O.BookPage, "show", "book page: build") end
+    if O.Stats then
+        timeFn(O.Stats, "show", "stats page: build")
+        timeFn(O.Stats, "forBook", "stats: book data")
+        timeFn(O.Stats, "saveOnClose", "stats: saved at close")
+    end
+    if O.Sheet then timeFn(O.Sheet, "new", "popup: build") end
+    if O.BookMore then
+        timeFn(O.BookMore, "more", "more popup: build")
+        timeFn(O.BookMore, "notes", "highlights: read")
+    end
+    -- 2.1.24: only once the stats page has loaded it (a load here at boot broke the ring)
+    local Rings = package.loaded["orbitshelf_rings"]
+    local okR = Rings ~= nil
+    if okR and type(Rings) == "table" then
+        timeFn(Rings, "monthCard", "day by day: build")
+        timeFn(Rings, "yearCard", "your year: build")
+        if type(Rings.loadYear) == "function" and not Rings._orbitshelf_diag_ly then
+            Rings._orbitshelf_diag_ly = true
+            local orig = Rings.loadYear
+            Rings.loadYear = function(src, y, done)
+                if not on() then return orig(src, y, done) end
+                local t0 = now_ms()
+                return orig(src, y, function(...)
+                    timed("your year: load", now_ms() - t0)
+                    log("speed: Your Year %s %s loaded in %d ms", tostring(src), tostring(y), now_ms() - t0)
+                    return done(...)
+                end)
+            end
+        end
+    end
+    hookPaint()
+end
+
 local function schedulePulse()
     local UIManager = require("ui/uimanager")
     local function pulse()
@@ -834,6 +969,7 @@ local function tryHooks()
     hookStartMenu()
     hookFooterClose()
     hookFooterCritterLog()
+    hookSpeed()
 
     if not package.loaded["orbitshelf_tweaks_patch"] then
         log("WARNING: OrbitShelf is not loaded: is plugins/orbitshelf.koplugin installed (or the old patch)?")
@@ -858,6 +994,7 @@ for _i, delay in ipairs({ 1, 3, 8 }) do
             hookFooterClose()
             hookFooterCritterLog()
             hookApiClient()
+            hookSpeed()
         else
             log("retry %ds: Bookshelf still missing", delay)
         end

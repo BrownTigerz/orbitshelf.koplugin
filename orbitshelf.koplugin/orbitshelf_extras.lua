@@ -70,7 +70,25 @@ local function setStatus(id, status, label, title)
     end)
 end
 
+-- 2.1.12: a colour for each status in the sheet
+local STATUS_HUE = { want_to_read = "blue", reading = "green", on_hold = "gold", read = "purple", abandoned = "red", unread = "teal" }
+
 local function pickStatus(id, title)
+    if O.Sheet then
+        local list = {}
+        local queued = O.Queue and O.Queue.statusEntry and O.Queue.statusEntry(id)
+        if queued then
+            list[#list + 1] = { text = T(_("Don't Send %1"), tostring(queued.label or queued.status)), note = _("waiting for Wi-Fi"),
+                colour = "orange", callback = function() O.Queue.removeStatus(id, true) end }
+        end
+        for _i, s in ipairs(STATUSES) do
+            local label = statusLabel(s[1], s[2])
+            list[#list + 1] = { text = label, colour = STATUS_HUE[s[1]], callback = function() setStatus(id, s[1], label, title) end }
+        end
+        O.Sheet.show{ title = _("Reading Status"), subtitle = tostring(title or ""),
+            sections = { { colour = "green", plain = true, items = { { kind = "list", list = list } } } } }
+        return
+    end
     local ButtonDialog = require("ui/widget/buttondialog")
     local dlg
     local rows = {}
@@ -115,6 +133,20 @@ function O.moreRow(book, widget, close)
     if type(book) ~= "table" or book.is_folder then return nil end
     return { text = _("More…"), callback = function()
         if close then close() end
+        if O.Sheet then
+            local list = {}
+            if O.canAddToCollection and O.canAddToCollection(book) then
+                list[#list + 1] = { text = _("Add To Collection"), colour = "pink", callback = function() O.addToCollection(book) end }
+            end
+            local status = O.readStatusRow(book)
+            if status then list[#list + 1] = { text = _("Reading Status"), colour = "green", callback = status.callback } end
+            if O.Bulk and O.Bulk.manage and tonumber(book.bookorbit_id) then
+                list[#list + 1] = { text = _("Manage Downloads"), colour = "blue", callback = function() O.Bulk.manage(book, widget) end }
+            end
+            O.Sheet.show{ title = tostring(book.display_title or book.title or ""), subtitle = _("More"),
+                sections = { { colour = "gold", plain = true, items = { { kind = "list", list = list } } } } }
+            return
+        end
         local ButtonDialog = require("ui/widget/buttondialog")
         local dlg
         local function shut() if dlg then UIManager:close(dlg) end end
@@ -130,6 +162,87 @@ function O.moreRow(book, widget, close)
         dlg = ButtonDialog:new{ title = tostring(book.display_title or book.title or ""), buttons = rows }
         UIManager:show(dlg)
     end }
+end
+
+-- ---- A book's popup (2.1.12) ---------------------------------------------------------------
+-- The shelf's popup for a BookOrbit book and the hero's hold menu, as one sheet: Get it
+-- (Open / Remove, or Download / Queue), This book (Book Page, Description, BookOrbit),
+-- More (Collection, Reading Status, Manage Downloads). opts.ctx: the shelf's ctx for the
+-- Book Page; opts.widget: the shelf widget for Manage Downloads.
+function O.bookSheet(book, opts)
+    if not O.Sheet or type(book) ~= "table" then return false end
+    opts = opts or {}
+    local id = tonumber(book.bookorbit_id)
+    local path = id and O.liveBookPath and O.liveBookPath(id)
+    if not path and type(book.filepath) == "string" and not book.filepath:match("^bookorbit://")
+        and O.lfs.attributes(book.filepath, "mode") == "file" then path = book.filepath end
+    local Q = O.Queue
+    local queued = Q and id and Q.has(id)
+    local wifi = O.isWifiOn()
+    local who = book.author
+    if type(who) ~= "string" or who == "" then who = type(book.authors) == "table" and book.authors[1] or "" end
+    local bits = {}
+    if type(who) == "string" and who ~= "" then bits[#bits + 1] = who end
+    if type(book.series) == "string" and book.series ~= "" then
+        local n = tonumber(book.series_index)
+        bits[#bits + 1] = n and T(_("%1 #%2"), book.series, tostring(n)) or book.series
+    end
+    local get = {}
+    local chip
+    if path then
+        chip = { kind = "chip", text = _("On this device"), colour = "green" }
+        get[#get + 1] = { text = _("Open"), fill = true, colour = "green", callback = function()
+            require("apps/reader/readerui"):showReader(path)
+        end }
+        if id then
+            get[#get + 1] = { text = _("Remove"), colour = "red", callback = function()
+                O.removeFromDevice({ bookorbit_id = id, filepath = path, title = book.title })
+            end }
+        end
+    elseif queued then
+        chip = { kind = "chip", text = _("Queued"), colour = "orange" }
+        get[#get + 1] = { text = _("Download Now"), fill = true, colour = "green", enabled = wifi, callback = function()
+            O.downloadBookOrbitBook(book)
+        end }
+        get[#get + 1] = { text = _("Move To Top"), colour = "teal", callback = function() Q.moveToTop(id) end }
+        get[#get + 1] = { text = _("Remove From Queue"), colour = "orange", callback = function() Q.removeDownload(id) end }
+    else
+        chip = { kind = "chip", text = _("Not on this device"), colour = "red", after = (not wifi) and _("Wi-Fi is off") or nil }
+        get[#get + 1] = { text = (Q and not wifi) and _("Download Now") or _("Download"), fill = true, colour = "green",
+            callback = function() O.downloadBookOrbitBook(book) end }
+        if Q and id then
+            get[#get + 1] = { text = _("Add To Queue"), colour = "teal", callback = function() Q.addDownload(book) end }
+        end
+    end
+    local this = {}
+    if O.BookPage and id then
+        this[#this + 1] = { text = _("Book Page"), fill = true, colour = "blue", callback = function() O.BookPage.show(book, opts.ctx) end }
+    end
+    this[#this + 1] = { text = _("Description"), colour = "blue", callback = function() O.showDescription(book) end }
+    if id then
+        this[#this + 1] = { text = _("Open In BookOrbit"), colour = "blue", callback = function() O.openInBookOrbit(book) end }
+    end
+    local more = {}
+    if O.canAddToCollection and O.canAddToCollection(book) then
+        more[#more + 1] = { text = _("Add To Collection"), colour = "pink", callback = function() O.addToCollection(book) end }
+    end
+    if id and O.pickReadStatus then
+        local q = Q and Q.statusOf and Q.statusOf(id)
+        more[#more + 1] = { text = q and _("Reading Status · Queued") or _("Reading Status"), colour = "gold",
+            callback = function() O.pickReadStatus(id, book.display_title or book.title) end }
+    end
+    if id and O.Bulk and O.Bulk.manage then
+        more[#more + 1] = { text = _("Manage Downloads"), colour = "purple", callback = function() O.Bulk.manage(book, opts.widget) end }
+    end
+    local sections = {
+        { title = _("Get it"), colour = "green", strong = true, items = { chip, { kind = "pills", list = get } } },
+        { title = _("This book"), colour = "blue", items = { { kind = "pills", list = this } } },
+    }
+    if #more > 0 then sections[#sections + 1] = { title = _("More"), colour = "gold", items = { { kind = "pills", list = more } } } end
+    local sheet = O.Sheet.show{ title = tostring(book.display_title or book.title or ""), subtitle = table.concat(bits, " · "),
+        sections = sections }
+    if opts.flash and O.flashPopup then pcall(O.flashPopup, sheet) end
+    return true
 end
 
 -- ---- Next In Series ------------------------------------------------------------------

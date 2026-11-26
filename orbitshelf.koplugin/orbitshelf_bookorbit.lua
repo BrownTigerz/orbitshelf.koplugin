@@ -633,6 +633,22 @@ local function applyReadState(rec)
     return rec
 end
 
+-- 2.1.15: the book's files, kept small for the Book Page: format, role, size, read-along
+local function filesOf(book)
+    if type(book.files) ~= "table" then return nil end
+    local out = {}
+    for _i, f in ipairs(book.files) do
+        if type(f) == "table" and type(f.format) == "string" and (f.role == "primary" or f.role == "content") then
+            local mo = type(f.mediaOverlay) == "table" and f.mediaOverlay.available == true
+                or f.mediaOverlayAvailable == true or f.sourceMediaOverlayAvailable == true
+            out[#out + 1] = { id = tonumber(f.id), fmt = f.format:lower(), role = f.role, size = tonumber(f.sizeBytes),
+                ra = mo or nil }
+        end
+    end
+    return #out > 0 and out or nil
+end
+O.filesOf = filesOf
+
 local function recordFromBo(book)
     local id = book.id
     local fp = liveBookPath(id)
@@ -690,6 +706,7 @@ local function recordFromBo(book)
         -- from an older saved one, which has none at all)
         bookorbit_status = type(book.readStatus) == "string" and book.readStatus or "",
         bookorbit_pct = bo_pct,
+        files = filesOf(book),
     }))
 end
 
@@ -941,6 +958,20 @@ end
 -- books being downloaded right now (a second tap doesn't start another)
 local downloading = {}
 
+-- 2.1.15 (TK): a book's own pick on the Book Page's Files line, over Downloads › Book
+-- Type for this book only: { mode = "text" | "narration" | "both", file = file id }
+function O.bookPick(id)
+    local m = G_reader_settings:readSetting("orbitshelf_book_files")
+    local p = type(m) == "table" and m[tostring(id)]
+    return type(p) == "table" and p or nil
+end
+function O.setBookPick(id, pick)
+    local m = G_reader_settings:readSetting("orbitshelf_book_files")
+    m = type(m) == "table" and m or {}
+    m[tostring(id)] = (type(pick) == "table" and next(pick)) and pick or nil
+    G_reader_settings:saveSetting("orbitshelf_book_files", m)
+end
+
 -- opts (Bulk Download): quiet = no corner note and no "Open it now?"; no_redraw = the
 -- shelf isn't redrawn per book (the batch redraws once); on_fail(msg) instead of a
 -- popup, called for every way it can stop, so a queue always moves on.
@@ -962,6 +993,13 @@ local function downloadBookOrbitBook(book, on_done, opts)
     local function pickFile(detail)
         local okU, CU = pcall(require, "bookorbit_catalog_util")
         local function usable(f) return type(f) == "table" and f.id and (not okU or CU.isSupportedFormat(f.format)) end
+        -- 2.1.15: the file picked for this book on its Book Page, when there is one
+        local want = tonumber(opts.file_id) or tonumber((O.bookPick(id) or {}).file)
+        if want then
+            for _i, f in ipairs(type(detail) == "table" and detail.files or {}) do
+                if usable(f) and tonumber(f.id) == want then return f end
+            end
+        end
         for _i, f in ipairs(type(detail) == "table" and detail.files or {}) do
             if usable(f) and f.role == "primary" then return f end
         end
@@ -1027,7 +1065,8 @@ local function downloadBookOrbitBook(book, on_done, opts)
         end
 
         -- 2.0.2: which form of a read-along EPUB (Downloads › Book Type)
-        local mode = cfg.readalong_download or "text"
+        -- 2.1.15: this book's own pick (Book Page › Files) over Book Type
+        local mode = opts.book_type or (O.bookPick(id) or {}).mode or cfg.readalong_download or "text"
         O.runWorker(client, function()
             -- in the worker: everything that waits on the network or the disk
             local util = require("util")
@@ -1289,39 +1328,6 @@ end
 -- Deletes a book's file, its sidecar and its history / collection entries; no
 -- questions and no redraw (Remove From Device and Bulk Remove ask first). True when
 -- the file is gone.
--- one file, its sidecar and its history / collection entries
-local function deleteOneFile(path)
-    pcall(os.remove, path)
-    -- sidecar
-    local sdr = path:match("^(.*)%.[^.]+$")
-    if sdr then
-        local dir = sdr .. ".sdr"
-        if lfs.attributes(dir, "mode") == "directory" then
-            pcall(function()
-                for f in lfs.dir(dir) do
-                    if f ~= "." and f ~= ".." then pcall(os.remove, dir .. "/" .. f) end
-                end
-                lfs.rmdir(dir)
-            end)
-        end
-    end
-    -- history / collections best-effort
-    pcall(function()
-        local ReadHistory = require("readhistory")
-        if ReadHistory and ReadHistory.removeItemByPath then
-            ReadHistory:removeItemByPath(path)
-        end
-    end)
-    pcall(function()
-        local RC = require("readcollection")
-        if type(RC) == "table" and type(RC.coll) == "table" then
-            for name in pairs(RC.coll) do
-                if RC.removeItem then pcall(RC.removeItem, RC, path, name) end
-            end
-        end
-    end)
-end
-
 local function deleteBookFiles(book, path)
     path = path or devicePathOf(book)
     if not path then return false end
@@ -1703,9 +1709,42 @@ local function popupDescription(book, text)
         padding = pad,
         VerticalGroup:new{ align = "left", head, VerticalSpan:new{ width = Screen:scaleBySize(6) }, body },
     }
+    -- 2.1.24 (TK): Look › Popup Style reaches this popup too. Rainbow: the edge in the
+    -- 8 colours and the colour line under the title, like the other popups. Standard: as before.
+    local Sh = O.Sheet
+    local SP = Sh and Sh.palette and Sh.palette() or nil
+    local rainbow = SP and Sh.rainbow and Sh.rainbow(SP) or false
+    local shown = frame
+    if rainbow then
+        local Widget = require("ui/widget/widget")
+        local Edge = Widget:extend{}
+        function Edge.getSize(_s) return frame:getSize() end
+        function Edge:paintTo(bb, x, y)
+            frame:paintTo(bb, x, y)
+            local sz = frame:getSize()
+            local t = Screen:scaleBySize(2) -- 2.1.30 (TK): thinner, sleeker
+            Sh.edge(bb, x, y, sz.w, sz.h, t, Screen:scaleBySize(10), SP)
+            -- the colour line under the title
+            local n = #Sh.CYCLE
+            local lx, lw = x + pad + Screen:scaleBySize(2), inner_w
+            local ly = y + Screen:scaleBySize(2) + pad + head:getSize().h + Screen:scaleBySize(1)
+            local seg = math.floor(lw / n)
+            for i, name in ipairs(Sh.CYCLE) do
+                local sx = lx + (i - 1) * seg
+                local k = Sh.cycleHue and Sh.cycleHue(SP, name) or SP.hue(name)
+                local ww = i == n and (lx + lw - sx) or seg
+                if k.rgb and bb.paintRectRGB32 then bb:paintRectRGB32(sx, ly, ww, Screen:scaleBySize(3), k.v)
+                else bb:paintRect(sx, ly, ww, Screen:scaleBySize(3), k.v) end
+            end
+            self.dimen = frame.dimen
+        end
+        -- taps and scrolling still reach ✕ and the text inside
+        function Edge.handleEvent(_s, ev) return frame:handleEvent(ev) end
+        shown = Edge:new{}
+    end
     local popup = InputContainer:new{
         dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh },
-        CenterContainer:new{ dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh }, frame },
+        CenterContainer:new{ dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh }, shown },
     }
     -- ScrollTextWidget refreshes through its dialog when it scrolls (1.2.0-1.2.2 left
     -- this empty, so scrolling a long description crashed KOReader)
@@ -1729,7 +1768,7 @@ local function popupDescription(book, text)
     function popup:onClose() close() return true end
     UIManager:show(popup)
     if O.cfg.flash_description then O.flashPopup(popup) end
-    UIManager:setDirty(popup, function() return "ui", frame.dimen end)
+    UIManager:setDirty(popup, function() return "ui", frame.dimen, rainbow or nil end)
 end
 
 -- Saved description first (Offline Library, or looked up earlier this session);
@@ -1805,6 +1844,8 @@ end
 -- A tap or a long-press on a book that is not on the device: say so and offer
 -- Download. Nothing downloads or opens until a button is pressed.
 local function showNotOnDevice(book, ctx)
+    -- 2.1.12: the sectioned sheet
+    if O.bookSheet and O.bookSheet(book, { ctx = ctx, widget = ctx and ctx.widget, flash = O.cfg.flash_download_menu }) then return end
     local ButtonDialog = require("ui/widget/buttondialog")
     local lines = { tostring(book.display_title or book.title or "") }
     local who = book.author
@@ -1873,6 +1914,7 @@ O.canAddToCollection = canAddToCollection
 O.Offline = Offline
 O.boApiClient = boApiClient
 O.bookIdForPath = bookIdForPath
+O.onDeviceByBookId = onDeviceByBookId -- 2.1.29: Your Year / All Time find books marked finished
 O.bookOrbitInstalled = bookOrbitInstalled
 O.bookOrbitSignedIn = bookOrbitSignedIn
 O.clearPageCache = clearPageCache

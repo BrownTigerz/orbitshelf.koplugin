@@ -21,6 +21,8 @@ local page_ctx    -- the shelf's ctx (Bulk needs the shelf widget)
 local strip_from = {} -- series key -> first index shown in the strip
 local strip_owner = {} -- series key -> the book whose page set strip_from
 local strip_sim = {} -- 2.0.0: book id -> true while its page shows Similar books (not the series / More by)
+local stats_dirty = false -- 2.1.0: the book changed under the stats page: drawn again on the way back
+local stats_opener -- 2.1.28: the page's Stats / All Time opener (BookPage.openStats)
 
 local STATUS_TEXT = {
     read = _("Read"), skimmed = _("Skimmed"), reading = _("Reading"), rereading = _("Rereading"),
@@ -417,7 +419,7 @@ local function miniBook(rec, w, h, label, current, on_tap, sub)
     -- sub: one line or a list (1.3.9: status, then On device / Queued)
     for _i, line in ipairs(type(sub) == "table" and sub or { sub }) do
         group[#group + 1] = W("textwidget"):new{ text = line, face = Font:getFace("cfont", 11),
-            fgcolor = require("ffi/blitbuffer").COLOR_DARK_GRAY, max_width = w }
+            fgcolor = require("ffi/blitbuffer").Color8(0x33), max_width = w }
     end
     local size = group:getSize()
     local box = W("container/inputcontainer"):new{ dimen = Geom:new{ w = w, h = size.h }, group }
@@ -440,7 +442,12 @@ local function close(refresh)
     device_state = {}
     strip_sim = {} -- opened again, the strip starts on the series
     strip_owner = {} -- ... around the book
-    UIManager:close(p, refresh ~= false and "full" or nil)
+    stats_dirty = false
+    if O.Stats then
+        if O.Stats.isShown() then O.Stats.close(false) end
+        O.Stats.reset()
+    end
+    UIManager:close(p, refresh ~= false and (O.flash and O.flash("bookpage") or "full") or nil)
 end
 
 local function again()
@@ -451,7 +458,29 @@ local function again()
 end
 
 again_for = function(id)
-    if page and page_id == id then pcall(again) end
+    if page and page_id == id then
+        if O.Stats and O.Stats.isShown() then stats_dirty = true return end
+        pcall(again)
+    end
+end
+
+-- 2.1.0: Reading Stats for this book (Books > Book Page: Reading Stats), or nil
+local function statsFor(rec)
+    if not (O.cfg and O.cfg.bookpage_stats) then return nil end
+    local ok, Stats = pcall(require, "orbitshelf_stats")
+    if not ok then logger.warn(TAG, "Reading Stats:", tostring(Stats)) return nil end
+    local id = tonumber(rec.bookorbit_id)
+    local path = id and O.liveBookPath and O.liveBookPath(id)
+    local st, pct, kobo_day = statusOf(rec)
+    local finished = st == "read" or st == "skimmed"
+    local fin_t
+    if finished and type(kobo_day) == "string" then
+        local y, mo, d = kobo_day:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
+        if y then fin_t = os.time{ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 } end
+    end
+    local got
+    ok, got = pcall(Stats.forBook, rec, path, (not finished) and pct or nil, finished, fin_t)
+    return ok and got or nil
 end
 
 local function legend()
@@ -465,82 +494,13 @@ local function legend()
             .. _("On this page") .. "\n"
             .. _("• Grey buttons don't apply to this book right now (Open and Remove need it on the device).") .. "\n"
             .. _("• Tap a book in a strip to see it here; swipe the series strip (or the arrows) for more.") .. "\n"
-            .. _("• X or swipe down goes back to the shelf."),
+            .. _("• ✕ or ‹ OrbitShelf goes back to the shelf; a swipe down brings KOReader's top menu."),
     })
 end
 
--- 1.3.12: what was under More is the top bar's left side (TK): Bulk Download…
--- (or Stop), Bulk Remove…, Help. Only X on the right. 1.3.13: no Description button
--- (tapping the description opens all of it).
-local function topActions(rec)
-    local acts = {}
-    -- 1.3.4: the Bulk window opens over the page; its X comes back here (only the
-    -- page's own X closes the page)
-    local widget = page_ctx and page_ctx.widget
-    -- 1.3.14: both, whatever this book is (TK: no Bulk Remove on a book not on the device)
-    local bulk = O.Bulk and O.Bulk.row(rec, widget, nil, true)
-    if bulk then acts[#acts + 1] = bulk end
-    local brem = O.Bulk and O.Bulk.removeRow(rec, widget, nil, true)
-    if brem then acts[#acts + 1] = brem end
-    acts[#acts + 1] = { text = _("Help"), callback = function() legend() end }
-    -- 1.3.15 (TK): no "…" up here (Bulk Download / Bulk Remove)
-    for _i, act in ipairs(acts) do
-        if type(act.text) == "string" then act.text = act.text:gsub("…$", "") end
-    end
-    return acts
-end
-
--- compact (1.3.18): beside the cover, 3 rows of 2, "Open In BookOrbit" is "BookOrbit"
-local function buttonRows(rec, width, compact)
-    local id = tonumber(rec.bookorbit_id)
-    local here = onDevice(id)
-    local path = O.liveBookPath and O.liveBookPath(id)
-    local Q = O.Queue
-    local queued = Q and Q.has(id)
-    local wifi = O.isWifiOn()
-    local get
-    if here then
-        get = { text = _("Download"), enabled = false, callback = function() end }
-    elseif queued then
-        get = { text = _("Remove Queue"), callback = function() Q.removeDownload(id) again() end }
-    elseif Q and not wifi then
-        get = { text = _("Queue"), callback = function() Q.addDownload(rec) again() end }
-    else
-        get = { text = _("Download"), callback = function()
-            O.downloadBookOrbitBook(rec, function() again() end)
-        end }
-    end
-    local row1 = {
-        get,
-        { text = _("Open"), enabled = path ~= nil, callback = function()
-            close()
-            require("apps/reader/readerui"):showReader(path)
-        end },
-        -- 1.3.21 (TK): the page stays open under BookOrbit, so closing BookOrbit comes back here
-        { text = _("Open In BookOrbit"), callback = function() O.openInBookOrbit(rec) end },
-    }
-    local row2 = {
-        { text = _("Remove"), enabled = here and true or false, callback = function()
-            -- the page is drawn again only once it's removed, so the question stays on top
-            O.removeFromDevice({ bookorbit_id = id, filepath = path or rec.filepath, title = rec.title }, again)
-        end },
-        { text = _("Reading Status"), callback = function()
-            if O.pickReadStatus then O.pickReadStatus(id, rec.display_title or rec.title) end
-        end },
-        { text = _("Collection"), enabled = O.canAddToCollection and O.canAddToCollection(rec) and true or false,
-          callback = function() O.addToCollection(rec) end },
-    }
-    if compact then
-        row1[3].text = _("BookOrbit")
-        local rows = {
-            { row1[1], row1[2] },
-            { row2[2], row2[3] },
-            { row1[3], row2[1] },
-        }
-        return W("buttontable"):new{ width = width, buttons = rows, zero_sep = true, show_parent = page }
-    end
-    return W("buttontable"):new{ width = width, buttons = { row1, row2 }, zero_sep = true, show_parent = page }
-end
+-- 2.1.15 (TK): the top bar and the buttons are drawn in render (the redesign): ‹ · Book |
+-- Stats · More ▾ · ✕; the main button beside the cover; Queue / Status / Collection /
+-- BookOrbit under it; the Files line. Downloads (the shelf's) is under More ▾.
 
 render = function(rec, ctx, replace)
     local Device = require("device")
@@ -557,7 +517,6 @@ render = function(rec, ctx, replace)
     local TextWidget = W("textwidget")
     local TextBoxWidget = W("textboxwidget")
     local Button = W("button")
-    local LineWidget = W("linewidget")
 
     local id = tonumber(rec.bookorbit_id)
     local sw, sh = Screen:getWidth(), Screen:getHeight()
@@ -568,177 +527,444 @@ render = function(rec, ctx, replace)
     local widget = W("container/inputcontainer"):new{
         dimen = Geom:new{ x = 0, y = 0, w = sw, h = sh },
         covers_fullscreen = true,
+        orbitshelf_perf = "book page", -- 2.1.15: diagnostics times its first draw
     }
     page, page_id, page_ctx = widget, id, ctx or page_ctx
 
-    -- top bar (1.3.12): Bulk Download… · Bulk Remove… · Help on the
-    -- left, X on the right (was "Book" with a More menu)
-    local function topButton(text, cb, size, enabled)
-        return Button:new{ text = text, bordersize = 0, padding = Screen:scaleBySize(6),
-            text_font_size = size or 20, callback = cb, show_parent = widget,
-            enabled = enabled ~= false }
+    -- ---- 2.1.15 (TK): the redesign. Colour from the sheets' palette (the Colour Theme),
+    -- grey on a grey screen. Top: ‹ · Book | Stats · More ▾ · ✕. The cover with the
+    -- details and one main button beside it; Queue / Status / Collection / BookOrbit
+    -- under; the Files line (what downloads, by Book Type or this book's own pick).
+    local Sheet = O.Sheet
+    local P = Sheet.palette()
+    local canvas, roundFill = Sheet.canvas, Sheet.roundFill
+    local function px(v) return Screen:scaleBySize(v) end
+    local INK, SOFT, PAPER = Blitbuffer.COLOR_BLACK, Blitbuffer.COLOR_GRAY, Blitbuffer.COLOR_WHITE
+    local ON_COLOUR = P.on or INK -- 2.1.22 (TK): words on a colour are black
+    -- 2.1.24 (TK): outlined pills and chips edged in their colour only with Popup Style
+    -- Rainbow; Standard edges them in black (white in night mode)
+    local RAINBOW = Sheet.rainbow and Sheet.rainbow(P) or false
+    -- 2.1.34 (TK): Popup Style Solid: every pill (filled or outlined) in its one colour
+    local SOLID = Sheet.solid and Sheet.solid(P) or nil
+    -- 2.1.36 (TK): Look › Pill Colours (off: plain pills, the words white on black)
+    local PILLS = Sheet.pillsColoured and Sheet.pillsColoured(P) or false
+    local function pillFill(hue) return PILLS and (SOLID or P.hue(hue)) or { v = INK } end
+    local PILL_ON = PILLS and ON_COLOUR or PAPER
+    -- 2.1.20 (TK: grey text is hard to read): small text near black
+    local SUB = Blitbuffer.Color8(0x33)
+    local function tw(s, size, bold, color, maxw)
+        return TextWidget:new{ text = s, face = Font:getFace("cfont", size), bold = bold, fgcolor = color or INK, max_width = maxw }
     end
-    local bx = topButton("\u{2715}", function() close() end)
-    -- 1.3.20 (TK): where the book is and the free space, beside the X
+    local function tapBox(w, fn)
+        local sz = w:getSize()
+        local box = W("container/inputcontainer"):new{ dimen = Geom:new{ w = sz.w, h = sz.h }, w }
+        box.ges_events = { Tap = { GestureRange:new{ ges = "tap", range = function() return box.dimen end } } }
+        box.onTap = function(_, arg, ges) fn(ges, arg) return true end
+        return box
+    end
+    -- a pill: filled (the main thing) or outlined, in a colour; greyed when not enabled
+    local function pillW(label, hue, filled, w, h, size, enabled)
+        enabled = enabled ~= false
+        local t = tw(label, size or 14, true, (filled and enabled) and PILL_ON or (enabled and INK or SOFT),
+            w and (w - px(16)) or nil)
+        w = w or (t:getSize().w + px(30))
+        h = h or px(34)
+        local c = canvas(w, h, function(bb, x, y)
+            if filled and enabled then
+                roundFill(bb, x, y, w, h, math.floor(h / 2), pillFill(hue))
+            else
+                local edge = (PILLS and RAINBOW) and (SOLID or P.hue(hue)).v or INK
+                bb:paintBorder(x, y, w, h, px(2), enabled and edge or SOFT, math.floor(h / 2))
+            end
+            t:paintTo(bb, x + math.floor((w - t:getSize().w) / 2), y + math.floor((h - t:getSize().h) / 2))
+        end)
+        return c
+    end
+    -- a colour box holding widgets that take taps (a canvas can't)
+    local BgBox = W("container/widgetcontainer"):extend{}
+    function BgBox:getSize() return Geom:new{ w = self.w, h = self.h } end
+    function BgBox:paintTo(bb, x, y)
+        self.dimen = Geom:new{ x = x, y = y, w = self.w, h = self.h }
+        self.draw(bb, x, y, self.w, self.h)
+        if self[1] then self[1]:paintTo(bb, x + self.padx, y + self.pady) end
+    end
+    local function card(child, w, hue, k)
+        local padx, pady = px(12), px(8)
+        local h = child:getSize().h + 2 * pady
+        return BgBox:new{ w = w, h = h, padx = padx, pady = pady, child, draw = function(bb, x, y, cw, ch)
+            -- 2.1.37 (TK): Look › Colour off: a plain card
+            roundFill(bb, x, y, cw, ch, px(14), (P.colour and PILLS) and P.tint(hue, k) or { v = Blitbuffer.gray(0.06) })
+        end }
+    end
+    -- a section's coloured tag and its name
+    local function tagHead(text, hue, w, right)
+        local t = tw(string.upper(text), 11, true, P.colour and INK or INK)
+        local r = right and tw(right, 11, false, SUB) or nil
+        local hh = math.max(t:getSize().h, r and r:getSize().h or 0)
+        return canvas(w, hh, function(bb, x, y)
+            roundFill(bb, x, y + math.floor(hh / 2) - px(3), px(14), px(6), px(3), P.colour and P.hue(hue) or { v = INK })
+            t:paintTo(bb, x + px(20), y)
+            if r then r:paintTo(bb, x + w - r:getSize().w, y + math.floor((hh - r:getSize().h) / 2)) end
+        end)
+    end
+
     local here = onDevice(id)
-    local where = here and _("On this device") or _("Not on device")
-    if not here and O.Queue and O.Queue.has(id) then where = _("Not on device · Queued") end
-    local free = O.freeBytes and O.freeBytes()
-    if free then where = where .. " · " .. T(_("%1 free"), O.mb(free)) end
-    local where_w = TextWidget:new{ text = where, face = Font:getFace("cfont", 13), bold = true,
-        fgcolor = Blitbuffer.COLOR_DARK_GRAY, max_width = math.floor(inner_w * 0.42) }
-    local where_gap = Screen:scaleBySize(8)
-    local left_room = inner_w - bx:getSize().w - where_w:getSize().w - where_gap
-    local acts = topActions(rec)
-    local left
-    for size = 18, 13, -1 do
-        left = HorizontalGroup:new{ align = "center" }
-        for i, a in ipairs(acts) do
-            if i > 1 then left[#left + 1] = HorizontalSpan:new{ width = Screen:scaleBySize(4) } end
-            left[#left + 1] = topButton(a.text, a.callback, size, a.enabled)
+    local path = here and O.liveBookPath and O.liveBookPath(id) or nil
+    local Q = O.Queue
+    local queued = Q and Q.has(id)
+    local wifi = O.isWifiOn()
+    local sdata = statsFor(rec)
+
+    -- top bar: ‹ · Book | Stats · More ▾ · ✕
+    -- 2.1.17 (TK): "‹ OrbitShelf", a bigger target than the bare arrow
+    local back_t = tw("‹ " .. _("OrbitShelf"), 15, true)
+    local back_b = tapBox(canvas(back_t:getSize().w + px(12), px(40), function(bb, x, y)
+        back_t:paintTo(bb, x + px(2), y + math.floor((px(40) - back_t:getSize().h) / 2))
+    end), function() close() end)
+    -- 2.1.17 (TK): a book not read on this Kobo (not downloaded) still has BookOrbit's stats
+    local bo_stats = not sdata and O.cfg and O.cfg.bookpage_stats and O.Stats and O.Stats.hasBookOrbit
+        and O.Stats.hasBookOrbit(rec) or false
+    -- 2.1.28 (TK): Book | Stats | All Time
+    local seg_w, seg_h = px(270), px(34)
+    local b_t, s_t = tw(_("Book"), 14, true, PILL_ON), tw(_("Stats"), 14, true, (sdata or bo_stats) and INK or SOFT)
+    local a_t = tw(_("All Time"), 14, true, INK)
+    local function openMore()
+        if O.BookMore and O.BookMore.more then
+            O.BookMore.more(rec, path or rec.filepath, { legend = legend, close = function() close() end,
+                downloads = (O.Bulk and O.Bulk.manage and id) and function()
+                    O.Bulk.manage(rec, page_ctx and page_ctx.widget, function() pcall(again) end)
+                end or nil })
+        else
+            legend()
         end
-        if left:getSize().w <= left_room then break end
     end
+    local function openStats(view)
+        -- 2.1.35 (a Kobo crashed here): with Reading Stats off the stats page isn't loaded
+        if not (O.cfg and O.cfg.bookpage_stats and O.Stats) then
+            UIManager:show(W("infomessage"):new{ text = _("Reading Stats is off.\n\nTurn it on in OrbitShelf's Settings › Books › Book Page: Reading Stats."), timeout = 4 })
+            return
+        end
+        if view ~= "all" and not sdata and not bo_stats then
+            UIManager:show(W("infomessage"):new{ text = _("No reading stats for this book yet (on this device or saved from BookOrbit)."), timeout = 3 })
+            return
+        end
+        O.Stats.show(rec, sdata, function()
+            if stats_dirty then stats_dirty = false pcall(again) end
+        end, function() close() end,
+            { view = view, more = openMore, has_stats = (sdata or bo_stats) and true or false })
+    end
+    stats_opener = openStats
+    local seg_box
+    local third = math.floor(seg_w / 3)
+    local seg = tapBox(canvas(seg_w, seg_h, function(bb, x, y)
+        roundFill(bb, x, y, seg_w, seg_h, math.floor(seg_h / 2), P.colour and P.tint("blue", 0.18) or { v = Blitbuffer.gray(0.1) })
+        roundFill(bb, x + px(3), y + px(3), third - px(3), seg_h - px(6), math.floor(seg_h / 2) - px(3),
+            pillFill("blue"))
+        local list = { b_t, s_t, a_t }
+        for k = 1, 3 do
+            local t = list[k]
+            t:paintTo(bb, x + math.floor(third * (k - 0.5) - t:getSize().w / 2),
+                y + math.floor((seg_h - t:getSize().h) / 2))
+        end
+    end), function(ges)
+        local pos = ges and ges.pos
+        local sx = seg_box and seg_box.dimen and seg_box.dimen.x
+        local k = (pos and sx) and math.floor((pos.x - sx) / third) + 1 or 2
+        if k <= 1 then return end
+        openStats(k >= 3 and "all" or "stats")
+    end)
+    seg_box = seg
+    local more_b = tapBox(pillW(_("More ▾"), "gold", false, nil, px(34), 13), openMore)
+    local x_t = tw("\u{2715}", 20, true)
+    local bx = tapBox(canvas(x_t:getSize().w + px(16), px(40), function(bb, x, y)
+        x_t:paintTo(bb, x + px(8), y + math.floor((px(40) - x_t:getSize().h) / 2))
+    end), function() close() end)
+    local right_w = more_b:getSize().w + px(8) + bx:getSize().w
+    local mid_l = math.floor((inner_w - seg_w) / 2) - back_b:getSize().w
     local top = HorizontalGroup:new{ align = "center",
-        left,
-        HorizontalSpan:new{ width = math.max(0, left_room - left:getSize().w) },
-        where_w, HorizontalSpan:new{ width = where_gap },
-        bx,
+        back_b, HorizontalSpan:new{ width = math.max(0, mid_l) }, seg,
+        HorizontalSpan:new{ width = math.max(0, inner_w - back_b:getSize().w - mid_l - seg_w - right_w) },
+        more_b, HorizontalSpan:new{ width = px(8) }, bx,
     }
     local function hline()
-        return LineWidget:new{ dimen = Geom:new{ w = inner_w, h = Screen:scaleBySize(1) },
-            background = Blitbuffer.COLOR_BLACK }
+        return VerticalSpan:new{ width = 1 }
     end
 
     -- cover left, details right
-    local cover_w = math.floor(inner_w * 0.34)
-    local cover_h = math.floor(cover_w * 1.5)
+    -- 2.1.15b: a smaller cover, so the strips and the description keep their room
+    local cover_w = math.floor(inner_w * 0.29)
+    local cover_h = math.floor(cover_w * 1.45)
     local info_w = inner_w - cover_w - gap
     local info = VerticalGroup:new{ align = "left" }
     local function add(w) info[#info + 1] = w end
     local function space(n) add(VerticalSpan:new{ width = Screen:scaleBySize(n) }) end
-    -- the title: 2 lines at most (1.3.18), tap it for all of it
+    -- the title: 2 lines at most, tap it for all of it
     do
         local full = tostring(rec.display_title or rec.title or "")
-        local tb = TextBoxWidget:new{ text = full, face = Font:getFace("cfont", 24),
-            bold = true, width = info_w, height = Screen:scaleBySize(90), height_overflow_show_ellipsis = true,
+        local tb = TextBoxWidget:new{ text = full, face = Font:getFace("cfont", 22),
+            bold = true, width = info_w, height = Screen:scaleBySize(62), height_overflow_show_ellipsis = true,
             height_adjust = true }
-        local box = W("container/inputcontainer"):new{ dimen = Geom:new{ w = info_w, h = tb:getSize().h }, tb }
-        box.ges_events = { Tap = { GestureRange:new{ ges = "tap", range = function() return box.dimen end } } }
-        function box:onTap()
-            UIManager:show(W("infomessage"):new{ text = full })
-            return true
-        end
-        add(box)
+        add(tapBox(tb, function() UIManager:show(W("infomessage"):new{ text = full }) end))
     end
     local who = rec.author
     if (type(who) ~= "string" or who == "") and type(rec.authors) == "table" then who = rec.authors[1] end
     if type(who) == "string" and who ~= "" then
-        space(4)
-        add(TextWidget:new{ text = who, face = Font:getFace("cfont", 17), max_width = info_w })
+        space(2)
+        add(tw(who, 17, false, SUB, info_w))
     end
+    -- series · year · pages
+    local t_lists = O.perfNow and O.perfNow()
     local series = seriesOf(rec)
+    if O.perf then O.perf("book page: lists", t_lists) end
+    local meta = {}
     if type(rec.series) == "string" and rec.series ~= "" then
-        space(6)
         local n = tonumber(rec.series_index)
         local of = series and #series or nil
-        local s = rec.series
-        if n then
-            s = s .. " · " .. (of and of >= n and T(_("Book %1 of %2"), tostring(n), of) or T(_("Book %1"), tostring(n)))
-        end
-        add(TextWidget:new{ text = s, face = Font:getFace("cfont", 15), max_width = info_w })
+        meta[#meta + 1] = rec.series .. (n and (" " .. (of and of >= n and T(_("#%1 of %2"), tostring(n), of) or ("#" .. tostring(n)))) or "")
     end
-    -- status (and its progress), from BookOrbit or waiting in the Queue, and when it was
-    -- last read: the newer of this Kobo's history and BookOrbit's (1.3.20: one line;
-    -- where it is and the free space moved to the top bar)
+    if rec.published then meta[#meta + 1] = tostring(rec.published):sub(1, 4) end
+    local pages = tonumber(rec.pages) or tonumber(rec.page_count)
+    if pages then meta[#meta + 1] = T(_("%1 pages"), pages) end
+    if #meta > 0 then
+        space(4)
+        add(tw(table.concat(meta, "  ·  "), 13, false, SUB, info_w))
+    end
+    -- chips: rating, two genres, the language
+    do
+        local list = {}
+        if tonumber(rec.rating) then list[#list + 1] = { "★ " .. string.format("%.1f", tonumber(rec.rating)), "gold" } end
+        if type(rec.genres) == "table" then
+            for i = 1, math.min(2, #rec.genres) do list[#list + 1] = { tostring(rec.genres[i]), i == 1 and "purple" or "pink" } end
+        end
+        if rec.lang then list[#list + 1] = { tostring(rec.lang), "teal" } end
+        if #list > 0 then
+            local row = HorizontalGroup:new{ align = "center" }
+            local used = 0
+            for _i, c in ipairs(list) do
+                local t = tw(c[1], 11, true, INK)
+                local cw2, ch2 = t:getSize().w + px(16), t:getSize().h + px(6)
+                if used + cw2 > info_w then break end
+                if used > 0 then row[#row + 1] = HorizontalSpan:new{ width = px(6) } used = used + px(6) end
+                row[#row + 1] = canvas(cw2, ch2, function(bb, x, y)
+                    if P.colour then roundFill(bb, x, y, cw2, ch2, math.floor(ch2 / 2), P.tint(c[2], 0.3)) end
+                    bb:paintBorder(x, y, cw2, ch2, px(1), P.colour and P.hue(c[2]).v or INK, math.floor(ch2 / 2))
+                    t:paintTo(bb, x + px(8), y + px(3))
+                end)
+                used = used + cw2
+            end
+            space(8)
+            add(row)
+        end
+    end
+    -- the status, its progress, and when it was last read / finished
     local st, pct, kobo_day = statusOf(rec)
-    local chips = {}
-    if st then chips[#chips + 1] = STATUS_TEXT[st] or st end
-    if pct and pct > 0 and st ~= "read" then chips[#chips + 1] = math.floor(pct * 100 + 0.5) .. "%" end
-    if O.Queue and O.Queue.statusOf(id) then chips[#chips + 1] = _("waiting for Wi-Fi") end
+    local head_bits = {}
+    if here then
+        head_bits[#head_bits + 1] = st and (STATUS_TEXT[st] or st) or _("On this device")
+    else
+        head_bits[#head_bits + 1] = _("Not on this device")
+        if st then head_bits[#head_bits + 1] = STATUS_TEXT[st] or st end
+    end
+    if pct and pct > 0 and st ~= "read" then head_bits[#head_bits + 1] = math.floor(pct * 100 + 0.5) .. "%" end
+    space(8)
+    add(tw(table.concat(head_bits, "  ·  "), 15, true, INK, info_w))
+    if pct and pct > 0 and pct < 1 then
+        space(5)
+        local pw, ph = info_w, px(8)
+        add(canvas(pw, ph, function(bb, x, y)
+            roundFill(bb, x, y, pw, ph, px(4), P.colour and P.track or { v = Blitbuffer.gray(0.2) })
+            roundFill(bb, x, y, math.max(ph, math.floor(pw * pct)), ph, px(4), P.colour and P.hue("green") or { v = INK })
+        end))
+    end
+    local sub_bits = {}
     local bo_t = tonumber(rec.last_read_time)
     local ko_t
-    local path = here and O.liveBookPath and O.liveBookPath(id)
     local RH = path and package.loaded["readhistory"]
     if RH and type(RH.hist) == "table" then
         for _i, hh in ipairs(RH.hist) do
             if type(hh) == "table" and hh.file == path then ko_t = tonumber(hh.time) break end
         end
     end
-    local last
-    if ko_t and (not bo_t or ko_t >= bo_t) then
-        last = shortDate(ko_t) and T(_("Last read %1 (Kobo)"), shortDate(ko_t))
-    elseif bo_t then
-        last = shortDate(bo_t) and T(_("Last read %1 (BookOrbit)"), shortDate(bo_t))
-    end
-    if last then chips[#chips + 1] = last end
-    -- 1.3.21 (TK): the line keeps its room when there's nothing to show, so every
-    -- page lines up the same
-    space(10)
-    add(TextWidget:new{ text = #chips > 0 and table.concat(chips, " · ") or " ", face = Font:getFace("cfont", 14),
-        bold = true, max_width = info_w })
-    if pct and pct > 0 and pct < 1 then
-        space(4)
-        add(W("progresswidget"):new{ width = info_w, height = Screen:scaleBySize(6), percentage = pct,
-            margin_h = 0, margin_v = 0, radius = 0, bordersize = Screen:scaleBySize(1) })
-    end
-    -- pages · year · language · genres (1.3.20: genres here, up to 4, cut with … if long)
-    local meta = {}
-    local pages = tonumber(rec.pages) or tonumber(rec.page_count)
-    if pages then meta[#meta + 1] = T(_("%1 pages"), pages) end
-    if rec.published then meta[#meta + 1] = tostring(rec.published):sub(1, 4) end
-    if rec.lang then meta[#meta + 1] = tostring(rec.lang) end
-    if type(rec.genres) == "table" then
-        for i = 1, math.min(4, #rec.genres) do meta[#meta + 1] = tostring(rec.genres[i]) end
-    end
-    if #meta > 0 then
-        space(8)
-        add(TextWidget:new{ text = table.concat(meta, " · "), face = Font:getFace("cfont", 14), max_width = info_w })
-    end
-    -- 1.3.22 (TK): when it was finished, in the room a progress bar would take: the
-    -- Kobo's own date for a book finished here
     if st == "read" or st == "skimmed" then
-        local fin
-        -- 1.3.23: matched on its own line ("x and s:match()" kept only the year, and
-        -- os.time without a day crashed KOReader on a finished book's page)
         local y, mo, d
         if type(kobo_day) == "string" then y, mo, d = kobo_day:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)") end
         if y and mo and d then
             local t = os.time{ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 }
-            fin = shortDate(t) and T(_("Finished %1 (Kobo)"), shortDate(t))
-        end
-        -- (1.3.24: BookOrbit's list has no finished date, checked in TK's log; only the Kobo's)
-        if fin then
-            space(8)
-            add(TextWidget:new{ text = fin, face = Font:getFace("cfont", 14), max_width = info_w })
+            if shortDate(t) then sub_bits[#sub_bits + 1] = T(_("finished %1"), shortDate(t)) end
         end
     end
-    -- 1.3.18 (TK): the buttons beside the cover, under the details, when they fit
-    -- there; a tall book (long title + series + progress + genres) keeps the full-width
-    -- rows under the cover
-    local beside = buttonRows(rec, info_w, true)
-    local buttons
-    -- 1.3.21 (TK): the last row lines up with the bottom of the cover picture
-    local cover, pic_h = coverWidget(rec, cover_w, cover_h, false, nil, 15)
-    local pic_bottom = math.floor((cover_h + math.min(pic_h or cover_h, cover_h)) / 2)
-    local gap_left = pic_bottom - info:getSize().h - beside:getSize().h
-    if gap_left >= Screen:scaleBySize(10) then
-        info[#info + 1] = VerticalSpan:new{ width = gap_left }
-        add(beside)
-        -- 1.3.19: measuring keeps the group's layout; it has to be redone now that it
-        -- has two more rows, or painting it fails (1.3.18 crashed here)
-        if info.resetLayout then info:resetLayout() else info._size, info._offsets = nil, {} end
+    if ko_t and (not bo_t or ko_t >= bo_t) then
+        if shortDate(ko_t) then sub_bits[#sub_bits + 1] = T(_("last read %1"), shortDate(ko_t)) end
+    elseif bo_t and shortDate(bo_t) then
+        sub_bits[#sub_bits + 1] = T(_("last read %1 (BookOrbit)"), shortDate(bo_t))
+    end
+    if queued then sub_bits[#sub_bits + 1] = _("queued for Wi-Fi") end
+    -- this book's own pick (the Files line)
+    local pick = O.bookPick and O.bookPick(id) or nil
+    local PICK_WORDS = { text = _("text only"), narration = _("with narration"), both = _("text + with narration") }
+    if pick and (pick.mode or pick.file) then
+        sub_bits[#sub_bits + 1] = T(_("this book only: %1"), pick.mode and PICK_WORDS[pick.mode] or _("another file"))
+    end
+    if #sub_bits > 0 then
+        space(4)
+        add(tw(table.concat(sub_bits, "  ·  "), 12, false, SUB, info_w))
+    end
+
+    -- the files: what BookOrbit has, what's here, what Download takes
+    local AUDIO = { m4b = true, mp3 = true, m4a = true, opus = true, ogg = true, flac = true, aac = true }
+    local okU, CU = pcall(require, "bookorbit_catalog_util")
+    local function supported(fmt) return not okU or CU.isSupportedFormat(fmt) end
+    local bt = (O.cfg or {}).readalong_download or "text"
+    local bt_shown = bt == "bookorbit" and "text" or bt
+    local mode = pick and pick.mode or bt_shown
+    local narr_here
+    do
+        local m = G_reader_settings:readSetting("orbitshelf_narrated_copies")
+        local p2 = type(m) == "table" and m[tostring(id)]
+        narr_here = type(p2) == "string" and fileExists(p2) or false
+    end
+    local file_chips = {}
+    local dl_size = 0
+    local primary_id
+    for _i, f in ipairs(type(rec.files) == "table" and rec.files or {}) do
+        if f.role == "primary" and supported(f.fmt) then primary_id = primary_id or f.id end
+    end
+    for _i, f in ipairs(type(rec.files) == "table" and rec.files or {}) do
+        if not primary_id and supported(f.fmt) and not AUDIO[f.fmt] then primary_id = f.id end
+    end
+    local function savePick(p2) if O.setBookPick then O.setBookPick(id, p2) end pcall(again) end
+    for _i, f in ipairs(type(rec.files) == "table" and rec.files or {}) do
+        local FMT = string.upper(f.fmt)
+        local size = f.size and O.mb and O.mb(f.size) or nil
+        if AUDIO[f.fmt] then
+            file_chips[#file_chips + 1] = { label = FMT .. " · " .. _("can't play"), hue = "orange", off = true }
+        elseif f.fmt == "epub" and f.ra then
+            local want_t = mode == "text" or mode == "both"
+            local want_n = mode == "narration" or mode == "both"
+            local function toggle(which)
+                local t2, n2 = want_t, want_n
+                if which == "t" then t2 = not t2 else n2 = not n2 end
+                if not t2 and not n2 then return end
+                local m2 = (t2 and n2) and "both" or (t2 and "text" or "narration")
+                local p2 = pick and { file = pick.file } or {}
+                p2.mode = m2 ~= bt_shown and m2 or nil
+                savePick(p2)
+            end
+            file_chips[#file_chips + 1] = { label = FMT, hue = "blue", on = want_t, here = here and (not narr_here or path ~= nil),
+                tap = function() toggle("t") end }
+            file_chips[#file_chips + 1] = { label = "♪ " .. _("Read-along") .. (size and (" · " .. size) or ""), hue = "purple",
+                on = want_n, here = narr_here, tap = function() toggle("n") end }
+            if want_n and f.size then dl_size = dl_size + f.size end
+        elseif supported(f.fmt) then
+            local chosen = (pick and pick.file) and (pick.file == f.id) or (not (pick and pick.file) and f.id == primary_id)
+            file_chips[#file_chips + 1] = { label = FMT .. (size and (" · " .. size) or ""), hue = "blue", on = chosen,
+                here = here and chosen, tap = function()
+                    local p2 = pick and { mode = pick.mode } or {}
+                    p2.file = f.id ~= primary_id and f.id or nil
+                    savePick(p2)
+                end }
+            if chosen and f.size then dl_size = dl_size + f.size end
+        else
+            file_chips[#file_chips + 1] = { label = FMT .. " · " .. _("can't open"), hue = "orange", off = true }
+        end
+    end
+
+    -- the main button
+    local main
+    local main_w, main_h = info_w, px(40)
+    if here then
+        main = tapBox(pillW((pct and pct > 0 and st ~= "read") and _("▶  Continue Reading") or _("▶  Start Reading"),
+            "green", true, main_w, main_h, 16), function()
+            close()
+            require("apps/reader/readerui"):showReader(path)
+        end)
+    elseif queued then
+        main = tapBox(pillW(_("Remove From Queue"), "teal", false, main_w, main_h, 16), function() Q.removeDownload(id) again() end)
+    elseif Q and not wifi then
+        main = tapBox(pillW(_("Queue Download") .. "  ·  " .. _("no Wi-Fi"), "teal", true, main_w, main_h, 15),
+            function() Q.addDownload(rec) again() end)
     else
-        buttons = buttonRows(rec, inner_w)
+        local lab = _("↓  Download")
+        if mode == "both" and #file_chips > 0 then lab = _("↓  Download 2 files") end
+        if dl_size > 0 and O.mb then lab = lab .. "  ·  " .. O.mb(dl_size) end
+        main = tapBox(pillW(lab, "blue", true, main_w, main_h, 16), function()
+            O.downloadBookOrbitBook(rec, function() again() end)
+        end)
     end
+    space(10)
+    add(main)
+
+    -- Queue / Status / Collection / BookOrbit, under the cover
+    local row_w = math.floor((inner_w - 3 * px(8)) / 4)
+    local acts = HorizontalGroup:new{ align = "center" }
+    local function act(i, label, hue, enabled, fn)
+        if i > 1 then acts[#acts + 1] = HorizontalSpan:new{ width = px(8) } end
+        local p2 = pillW(label, hue, false, row_w, px(32), 13, enabled)
+        acts[#acts + 1] = enabled and tapBox(p2, fn) or p2
+    end
+    if here then
+        act(1, _("Remove"), "red", true, function()
+            O.removeFromDevice({ bookorbit_id = id, filepath = path or rec.filepath, title = rec.title }, again)
+        end)
+    else
+        act(1, queued and _("Unqueue") or _("Queue"), "teal", Q ~= nil, function()
+            if queued then Q.removeDownload(id) else Q.addDownload(rec) end
+            again()
+        end)
+    end
+    act(2, _("Status ▾"), "gold", O.pickReadStatus ~= nil, function() O.pickReadStatus(id, rec.display_title or rec.title) end)
+    act(3, _("Collection +"), "pink", O.canAddToCollection and O.canAddToCollection(rec) and true or false,
+        function() O.addToCollection(rec) end)
+    act(4, _("BookOrbit ↗"), "blue", true, function() O.openInBookOrbit(rec) end)
+
+    -- the Files line
+    local free = O.freeBytes and O.freeBytes()
+    local BT_NAMES = { text = _("Text Only"), narration = _("With Narration"), both = _("Both"), bookorbit = _("Same As BookOrbit") }
+    local files_box
+    do
+        local fw = inner_w - px(24)
+        local right = T(_("Book Type: %1"), BT_NAMES[bt] or bt) .. (free and ("  ·  " .. T(_("%1 free"), O.mb(free))) or "")
+            .. (#file_chips > 0 and ("  ·  " .. _("tap a file: this book only")) or "")
+        local g2 = VerticalGroup:new{ align = "left", tagHead(_("Files"), "blue", fw, right) }
+        g2[#g2 + 1] = VerticalSpan:new{ width = px(6) }
+        if #file_chips == 0 then
+            g2[#g2 + 1] = tw(_("BookOrbit's list of files shows here after the shelf next refreshes."), 12, false, SUB, fw)
+        else
+            local row = HorizontalGroup:new{ align = "center" }
+            local used = 0
+            for _i, c in ipairs(file_chips) do
+                local label = ((c.here and c.on) and "✓ " or "") .. c.label
+                local t = tw(label, 12, true, (c.on and P.colour) and ON_COLOUR or ((c.on and not P.colour) and PAPER or (c.off and SOFT or INK)))
+                local cw2, ch2 = t:getSize().w + px(22), t:getSize().h + px(12)
+                if used + cw2 > fw then break end
+                local chip = canvas(cw2, ch2, function(bb, x, y)
+                    if c.on then
+                        roundFill(bb, x, y, cw2, ch2, math.floor(ch2 / 2), P.colour and P.hue(c.hue) or { v = INK })
+                    else
+                        local edge = (P.colour and RAINBOW) and P.hue(c.hue).v or INK
+                        bb:paintBorder(x, y, cw2, ch2, px(2), c.off and SOFT or edge, math.floor(ch2 / 2))
+                    end
+                    t:paintTo(bb, x + px(11), y + px(6))
+                end)
+                if used > 0 then row[#row + 1] = HorizontalSpan:new{ width = px(8) } used = used + px(8) end
+                row[#row + 1] = c.tap and tapBox(chip, c.tap) or chip
+                used = used + cw2
+            end
+            g2[#g2 + 1] = row
+        end
+        files_box = card(g2, inner_w, "blue", P.night and 0.16 or 0.1)
+    end
+    local buttons = VerticalGroup:new{ align = "left", acts, VerticalSpan:new{ width = px(8) }, files_box }
+
+    local cover = coverWidget(rec, cover_w, cover_h, false, nil, 15)
     local hero = HorizontalGroup:new{ align = "top",
         cover, HorizontalSpan:new{ width = gap }, info }
-
 
     -- 2.0.0: Similar books are their own section, one tap ("Similar ›") or swipe left
     -- away from the series strip or More by; "‹ Series" / "‹ More by" or a swipe right
     -- goes back. Opened, the page always starts on the series (or More by).
     local sims = {}
+    local t_sims = O.perfNow and O.perfNow()
     do
         local in_series = {}
         for _i, r in ipairs(series or {}) do in_series[tonumber(r.bookorbit_id) or -1] = true end
@@ -748,6 +974,7 @@ render = function(rec, ctx, replace)
             if #sims >= 8 then break end
         end
     end
+    if O.perf then O.perf("book page: lists", t_sims) end
     local sim_mode = #sims > 0 and strip_sim[id] == true
     local function setSim(on)
         strip_sim[id] = on and true or nil
@@ -755,16 +982,14 @@ render = function(rec, ctx, replace)
     end
     -- a section heading, with a small button on the right
     local function headRow(text, btn_text, on_btn)
-        local face = Font:getFace("cfont", 14)
         if not btn_text then
-            return TextWidget:new{ text = text, face = face, bold = true, max_width = inner_w }
+            return tagHead(text, "pink", inner_w)
         end
         local btn = Button:new{ text = btn_text, bordersize = 0, padding = 0, margin = 0,
             text_font_face = "cfont", text_font_size = 14, text_font_bold = false,
             callback = on_btn, show_parent = widget }
         local bw = btn:getSize().w
-        local title = TextWidget:new{ text = text, face = face, bold = true,
-            max_width = math.max(1, inner_w - bw - gap) }
+        local title = tagHead(text, "pink", math.max(1, inner_w - bw - gap))
         return HorizontalGroup:new{ align = "center", title,
             HorizontalSpan:new{ width = math.max(0, inner_w - title:getSize().w - bw) }, btn }
     end
@@ -794,7 +1019,7 @@ render = function(rec, ctx, replace)
         local many = #series > SHOW
         local avail = inner_w - (many and 2 * arrow_w or 0)
         local mw = math.floor((avail - (SHOW - 1) * gap) / SHOW)
-        local mh = math.floor(mw * 1.45)
+        local mh = math.floor(mw * 1.2)
         local row = HorizontalGroup:new{ align = "top" }
         local function shift(by)
             strip_from[key] = math.max(1, math.min(from + by, #series - SHOW + 1))
@@ -842,7 +1067,9 @@ render = function(rec, ctx, replace)
     local desc_face = Font:getFace("cfont", 16)
     -- the description box's own line height (two lines, halved)
     local line_h = math.max(1, math.floor(TextBoxWidget:new{ text = "A\nA", face = desc_face, width = inner_w }:getSize().h / 2))
-    local desc_head = TextWidget:new{ text = _("Description"), face = Font:getFace("cfont", 14), bold = true }
+    -- 2.1.12 (TK): the box shows the description only (Stats is in the top bar)
+    local desc_head
+    desc_head = tagHead(_("Description"), "gold", inner_w)
     local desc_room = sh - fixed - pad - h(desc_head) - s4 - 1 - s8
 
     -- more by the author. With the series strip: one row of 4 when there's still room
@@ -858,7 +1085,9 @@ render = function(rec, ctx, replace)
         more_btn = { back, function() setSim(false) end }
         more_swipe = { east = function() setSim(false) end }
     else
+        local t_more = O.perfNow and O.perfNow()
         more_books = moreByAuthor(rec, no_strip and 8 or 4, not no_strip)
+        if O.perf then O.perf("book page: lists", t_more) end
         -- 1.3.8: no series and nothing else by the author: Similar books (BookOrbit's own
         -- picks once looked up, else the saved library's closest by genre)
         more_title = T(_("More by %1"), tostring(who or ""))
@@ -873,7 +1102,7 @@ render = function(rec, ctx, replace)
     end
     if #more_books > 0 then
         local mw = math.floor((inner_w - 3 * gap) / 4)
-        local mh = math.floor(mw * (no_strip and 1.2 or 0.9))
+        local mh = math.floor(mw * (no_strip and 1.05 or 0.85))
         local function rowOf(a, b)
             local row = HorizontalGroup:new{ align = "top" }
             for i = a, math.min(b, #more_books) do
@@ -887,7 +1116,8 @@ render = function(rec, ctx, replace)
             return row
         end
         more_head = headRow(more_title, more_btn and more_btn[1], more_btn and more_btn[2])
-        local keep = (no_strip and 3 or 4) * line_h
+        -- 2.1.15b: the description keeps 2 lines (was 3 or 4): the page's top is taller now
+        local keep = 2 * line_h
         local head_need = h(more_head) + s4 + 1 + s8 + s12
         -- 2.0.0: a swipe on the section switches More by <-> Similar books
         local function swipeable(g)
@@ -919,6 +1149,10 @@ render = function(rec, ctx, replace)
     local desc = rec.description
     if type(desc) ~= "string" or desc == "" then desc = nil end
     local body, body_text, body_lines
+    local function makeBody(lines)
+        return TextBoxWidget:new{ text = body_text, face = desc_face, width = inner_w,
+            height = lines * line_h, height_overflow_show_ellipsis = true }
+    end
     if desc and desc_room >= line_h then
         local text = desc:gsub("\r", ""):gsub("<[Bb][Rr]%s*/?>", "\n"):gsub("</[Pp]>", "\n"):gsub("<[^>]+>", "")
             :gsub("&nbsp;", " "):gsub("&quot;", '"'):gsub("&#0*39;", "'"):gsub("&amp;", "&")
@@ -930,10 +1164,11 @@ render = function(rec, ctx, replace)
     else
         body = TextWidget:new{ text = O.isWifiOn() and _("Tap here to look up the description in BookOrbit.")
             or _("No description saved (Offline Library keeps them)."), face = Font:getFace("cfont", 14),
-            fgcolor = Blitbuffer.COLOR_DARK_GRAY, max_width = inner_w }
+            fgcolor = Blitbuffer.Color8(0x33), max_width = inner_w }
     end
 
-    -- 1.3.7: tapping the description opens all of it (Book Description)
+    -- 1.3.7: tapping the description opens all of it (Book Description); 2.1.0:
+    -- on the stats side, the stats page. A swipe turns the box over.
     local function tappable(w)
         local sz = w:getSize()
         local box = W("container/inputcontainer"):new{ dimen = Geom:new{ w = inner_w, h = sz.h }, w }
@@ -993,8 +1228,7 @@ render = function(rec, ctx, replace)
         lines = math.max(1, lines)
         if lines ~= body_lines then
             body_lines = lines
-            col[body_at] = tappable(TextBoxWidget:new{ text = body_text, face = desc_face, width = inner_w,
-                height = lines * line_h, height_overflow_show_ellipsis = true })
+            col[body_at] = tappable(makeBody(lines))
             if col.resetLayout then col:resetLayout() end
         end
     end
@@ -1014,20 +1248,25 @@ render = function(rec, ctx, replace)
     }
     widget.key_events = { Close = { { Device.input and Device.input.group and Device.input.group.Back or "Back" } } }
     function widget:onClose() close() return true end
-    -- a swipe down closes too (like Bookshelf's own pages)
+    -- a swipe down: KOReader's top menu over the page (2.1.23, TK; it used to close the page)
     widget.ges_events = { SwipeClose = { GestureRange:new{ ges = "swipe", range = widget.dimen } } }
     function widget:onSwipeClose(_arg, ges)
-        if ges and ges.direction == "south" then close() return true end
+        if ges and ges.direction == "south" then
+            if not (O.showTopMenu and O.showTopMenu()) then close() end
+            return true
+        end
         return false
     end
 
     -- 1.3.6: a full flash only when the page opens (and closes); swiping the strip,
     -- tapping another book or a button's change redraws it without the flash
     if replace and old then
+        -- 2.1.17 (TK): another book, series <-> similar, a strip's swipe: a quick flash by
+        -- default (it left ghosting with none); Look › Screen Flashes
         UIManager:close(old)
-        UIManager:show(widget, "ui")
+        UIManager:show(widget, O.flash and O.flash("bookpage_change") or "ui")
     else
-        UIManager:show(widget, "full")
+        UIManager:show(widget, O.flash and O.flash("bookpage") or "full")
     end
 end
 
@@ -1048,10 +1287,18 @@ end
 -- something about the book changed (a status saved, the queue, a download): drawn again
 function BookPage.changed(id)
     device_state = {}
-    if page and (id == nil or tonumber(id) == page_id) then pcall(again) end
+    if page and (id == nil or tonumber(id) == page_id) then
+        if O.Stats and O.Stats.isShown() then stats_dirty = true return end
+        pcall(again)
+    end
 end
 
 function BookPage.isShown() return page ~= nil end
+
+-- 2.1.28: the shown page's Stats (Your Year's book popup: Stats)
+function BookPage.openStats(view)
+    if page and stats_opener then pcall(stats_opener, view or "stats") end
+end
 
 -- going to sleep (1.3.10): the page closes, so waking up never finds it left
 -- behind the home screen (it showed glitched over the shelf after). No

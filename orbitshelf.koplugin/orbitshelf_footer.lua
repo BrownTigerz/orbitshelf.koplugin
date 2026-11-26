@@ -49,12 +49,23 @@ end
 -- closes the shelf directly. Anything else that would open the start menu
 -- (gesture action, keyboard focus on the footer button) closes the shelf too.
 local function closeShelfFrom(bw)
+    -- 2.1.5: with a book held open behind the shelf (Instant book close), Bookshelf
+    -- shows "Closing book…" and repaints before the book closes; a full refresh
+    -- asked for here flashed the shelf at that moment, before anything closed. The
+    -- home / file browser that comes after the book refreshes the screen itself, so
+    -- no full refresh from here then. With no book held it's still asked for: it
+    -- lands on the screen that replaces the shelf and clears the shelf's ghost.
+    local held = false
+    pcall(function()
+        local Park = package.loaded["lib/bookshelf_reader_park"]
+        held = type(Park) == "table" and type(Park.isParked) == "function" and Park.isParked() == true
+    end)
     local done = false
     if type(bw) == "table" and type(bw.onClose) == "function" then
         done = pcall(bw.onClose, bw)
     end
     if not done then closeBookshelf() end
-    pcall(function() UIManager:setDirty("all", "full") end)
+    if not held then pcall(function() UIManager:setDirty("all", "full") end) end
 end
 
 local function buildCloseXIcon(bw, focused, frame_width)
@@ -86,6 +97,54 @@ local function buildCloseXIcon(bw, focused, frame_width)
     end)
     bw._burger_dimen = btn.dimen
     return btn
+end
+
+-- 2.1.5: a book opened from Bookshelf with its Cover opening effect opens
+-- "seamlessly": the book arrives with a light refresh, and Bookshelf asks for one
+-- full refresh to clear the shelf from the screen. It asks while the book is still
+-- loading (its onReaderReady), and a repaint during the load can use it up while
+-- only the shelf is on screen (TK's log: the flash drew the shelf and the hidden
+-- "Opening file" box, then the book came with a light refresh), so the cover stayed
+-- as a ghost on the page. Here Bookshelf's early one is dropped and the full refresh
+-- is asked for once the book is on screen. One flash, after the book is there.
+local seamless_shelf -- the shelf that's opening a book, until KOReader shows it
+local function hookSeamlessOpen(BW)
+    if BW._orbitshelf_seamless_open then return end
+    if type(BW._launchReader) ~= "function" then
+        O.remember(BW, "_launchReader") -- reports it missing
+        return
+    end
+    BW._orbitshelf_seamless_open = true
+    O.remember(BW, "_launchReader")
+    local orig_launch = BW._launchReader
+    -- (a left-over one is harmless: it only counts while Bookshelf's own flag is set)
+    BW._launchReader = function(self, ...)
+        seamless_shelf = self
+        return orig_launch(self, ...)
+    end
+    local okR, ReaderUI = pcall(require, "apps/reader/readerui")
+    if not okR or type(ReaderUI) ~= "table" or type(ReaderUI.doShowReader) ~= "function"
+            or ReaderUI._orbitshelf_seamless_open then
+        return
+    end
+    ReaderUI._orbitshelf_seamless_open = true
+    local orig_show = ReaderUI.doShowReader
+    ReaderUI.doShowReader = function(self, file, provider, seamless, ...)
+        local bw = seamless_shelf
+        seamless_shelf = nil
+        local mine = false
+        if seamless and type(bw) == "table" and bw._seamless_open_full_pending then
+            bw._seamless_open_full_pending = nil
+            mine = true
+        end
+        local res = orig_show(self, file, provider, seamless, ...)
+        -- the book is in the window stack now (not if it couldn't open, or if a
+        -- password prompt is still waiting: nothing to do then)
+        if mine and type(ReaderUI.instance) == "table" then
+            pcall(function() UIManager:setDirty("all", "full") end)
+        end
+        return res
+    end
 end
 
 local function hookFlatClose(BW)
@@ -187,6 +246,7 @@ local function hookCloseOnlyMenu()
     local okW, BW = pcall(require, "lib/bookshelf_widget")
     if okW and type(BW) == "table" then
         hookFlatClose(BW)
+        hookSeamlessOpen(BW)
     end
     if okW and type(BW) == "table" and type(BW._startMenuPosition) == "function"
             and not BW._orbitshelf_close_side then
@@ -595,6 +655,30 @@ local function critterAspect(path)
     end
     critter_aspects[path] = a
     return a or nil
+end
+
+-- 2.1.8: the same critter for Reading Stats (the trail's camp and its nap), at most
+-- max_w x max_h, in a mood (falls back like the footer's). nil without SimpleUI.
+function O.critterSprite(mood, max_w, max_h)
+    local Sprite = sui("modules/critter/sprite")
+    local Assets = sui("modules/critter/assets")
+    if not (type(Sprite) == "table" and type(Assets) == "table" and type(Assets.get) == "function") then return nil end
+    local want = critterId(Assets)
+    local entry = Assets.get(want)
+    if type(entry) == "table" and want and entry.id ~= want and type(Assets.list) == "function" then
+        for _i, e in ipairs(Assets.list()) do
+            if e.id == want then entry = e break end
+        end
+    end
+    local path = entry and (Assets.imagePath(entry, mood)
+        or (BASE_MOOD[mood] and Assets.imagePath(entry, BASE_MOOD[mood]))
+        or Assets.imagePath(entry, "happy"))
+    if not path then return nil end
+    local aspect = critterAspect(path)
+    local box_w = aspect and math.min(max_w, math.max(1, math.floor(max_h * aspect + 0.5))) or max_w
+    local sp = Sprite:new{ path = path, max_w = box_w, max_h = max_h }
+    if sp.dimen and sp.dimen.w > 0 then return sp end
+    return nil
 end
 
 local function buildFooterCritter(bw, max_w, h)

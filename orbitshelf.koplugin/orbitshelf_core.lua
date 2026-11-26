@@ -1,5 +1,5 @@
 -- Part of the OrbitShelf plugin (orbitshelf.koplugin); see main.lua.
-local VERSION = "2.0.2"
+local VERSION = "2.2.0"
 local TAG = "orbitshelf " .. VERSION .. ":"
 local SETTINGS_KEY = "orbitshelf_tweaks"
 local MENU_ID = "orbitshelf_tweaks"
@@ -67,8 +67,24 @@ local DEFAULTS = {
     home_button = false,           -- footer: Home button opposite the close X / hamburger
     home_target = false,           -- Home goes to: false = page 1 of this shelf; a shelf id = that shelf's page 1
     hold_opens = "menu",           -- holding a BookOrbit book not on the device: "menu" (quick menu) | "page" (Book Page)
+    bookpage_stats = true,         -- 2.1.7: Book Page: Reading Stats (the Description box's other side + the stats page); on by default from 2.1.35 (TK)
+    stats_source = "kobo",         -- 2.1.10: the stats page's last pick, "kobo" (This Kobo) or "bookorbit"
     next_series_mode = "ask",      -- with next_in_series on: "ask" (a question back home) | "queue" (into the Queue)
     whats_new_seen = false,        -- the last version whose What's New note was shown
+    -- 2.1.34: these were set in Look but never kept after a restart (only the keys here
+    -- are saved). Their defaults are what they already were, so nothing looks different.
+    colour_theme = "vibrant",      -- 2.1.15: Look › Colour Theme
+    theme_base = false,            -- Custom: the preset it started from
+    theme_custom = false,          -- Custom: its own colours { name = { r, g, b } }
+    popup_style = "standard",      -- 2.1.23: Look › Popup Style: "standard" | "rainbow" | "solid" (2.1.34)
+    popup_colour = "blue",         -- 2.1.34: Solid's colour (one of the 8)
+    setup_seen = false,            -- 2.2.0: Quick Setup shown once
+    pill_colours = false,          -- 2.1.36 (TK): Look › Pill Colours (off: plain pills, "standard")
+    flash_popup = "flashui",       -- 2.1.17: Look › Screen Flashes, each kind: "ui" | "flashui" | "full"
+    flash_bookpage = "full",
+    flash_bookpage_change = "flashui",
+    flash_stats = "full",
+    flash_stats_change = "full",
 }
 
 -- What the patch (up to 1.6.1) had on by default. Someone who used the patch but never
@@ -255,6 +271,7 @@ local HOOK_LABELS = {
     _searchAndDrill = "BookOrbit search", show = "Return To shelf",
     _showBookDetail = "Flash: Bookshelf book menu", editTab = "Flash: shelf editor",
     _buildFooterRow = "Home button", _renderShadowedCard = "Not On Device mark",
+    _launchReader = "book open refresh",
 }
 local remembered, armed = {}, {}
 

@@ -516,7 +516,6 @@ local function showChecklist(book, widget, mode)
     end
 
     local function selectMenu()
-        local ButtonDialog = require("ui/widget/buttondialog")
         local s, a = seriesOf(book), firstAuthor(book)
         local dlg
         local function pick(fn)
@@ -540,7 +539,7 @@ local function showChecklist(book, widget, mode)
             callback = pick(function(r) return firstAuthor(r) == a end) }}
         buttons[#buttons + 1] = {{ text = _("None"), callback = pick(function() return false end) }}
         buttons[#buttons + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dlg) end }}
-        dlg = ButtonDialog:new{ title = _("Select"), buttons = buttons }
+        dlg = O.dialog{ colour = "purple", title = _("Select"), buttons = buttons }
         UIManager:show(dlg)
     end
 
@@ -666,6 +665,105 @@ function Bulk.removeRow(book, widget, close, always)
         if close then close() end
         open(book, widget, "remove")
     end }
+end
+
+-- ---- Manage Downloads (2.1.12) ----------------------------------------------------------
+-- The Book Page's one place for downloads: what's running now, this book, the shelf's
+-- books (Download N… / Remove N… open the tick list as before), the queue and the space.
+-- on_change: the Book Page's redraw after this book was downloaded or removed.
+function Bulk.manage(book, widget, on_change)
+    if not O.Sheet then return end
+    local sections = {}
+    -- now
+    local j = job
+    if j then
+        local rec = j.list[math.max(1, j.i)]
+        sections[#sections + 1] = { title = _("Now"), colour = "green", strong = true, items = {
+            { kind = "text", text = T(_("Downloading %1 of %2"), math.max(j.i, 1), #j.list), size = 15, bold = true },
+            rec and { kind = "text", text = shortTitle(rec, 40), size = 11, dim = true } or nil,
+            { kind = "bar", frac = (math.max(j.i, 1) - 1) / math.max(1, #j.list), colour = "green" },
+            { kind = "pills", list = { { text = j.stop_after and _("Stopping…") or _("Stop"), fill = true, colour = "red",
+                enabled = not j.stop_after, callback = function() Bulk.stop() end } } },
+        } }
+    end
+    -- this book
+    local here = onDevice(book)
+    local id = idOf(book)
+    local Q = O.Queue
+    local queued = Q and id and Q.has(id)
+    local path = O.liveBookPath and O.liveBookPath(id)
+    local size = path and O.lfs.attributes(path, "size")
+    local pills = {}
+    if here then
+        pills[1] = { text = _("Remove"), colour = "red", callback = function()
+            O.removeFromDevice({ bookorbit_id = id, filepath = path or book.filepath, title = book.title }, on_change)
+        end }
+    elseif queued then
+        pills[1] = { text = _("Remove From Queue"), colour = "orange", callback = function()
+            Q.removeDownload(id)
+            if on_change then on_change() end
+        end }
+    else
+        pills[1] = { text = _("Download"), fill = true, colour = "green", enabled = O.isWifiOn() or Q ~= nil,
+            callback = function()
+                if Q and not O.isWifiOn() then Q.addDownload(book) else O.downloadBookOrbitBook(book, on_change) end
+            end }
+        if Q and O.isWifiOn() then
+            pills[2] = { text = _("Add To Queue"), colour = "teal", callback = function() Q.addDownload(book) end }
+        end
+    end
+    sections[#sections + 1] = { title = _("This book"), colour = "gold", strong = true, items = {
+        { kind = "text", text = tostring(book.display_title or book.title or ""), size = 15, bold = true },
+        { kind = "chip", text = here and _("On this device") or (queued and _("Queued") or _("Not on this device")),
+          colour = here and "green" or (queued and "orange" or "red"), after = size and mb(size) or nil },
+        { kind = "pills", list = pills },
+    } }
+    -- the shelf
+    local level, books = levelFor(book, widget)
+    books = books or { book }
+    local on, off = 0, 0
+    for i = 1, #books do if onDevice(books[i]) then on = on + 1 else off = off + 1 end end
+    sections[#sections + 1] = { title = T(_("This shelf · %1"), levelLabel(level)), colour = "blue", items = {
+        { kind = "text", text = #books == 1 and _("1 book") or T(_("%1 books"), #books), size = 17, bold = true },
+        { kind = "text", text = T(_("%1 on this device · %2 not"), on, off), size = 12, dim = true },
+        { kind = "bar", frac = on / math.max(1, #books), colour = "blue" },
+        { kind = "pills", list = {
+            { text = off == 1 and _("Download 1…") or T(_("Download %1…"), off), fill = true, colour = "blue",
+              enabled = off > 0 and not j and O.isWifiOn() and true or false, callback = function() open(book, widget, "download") end },
+            { text = on == 1 and _("Remove 1…") or T(_("Remove %1…"), on), colour = "red",
+              enabled = on > 0, callback = function() open(book, widget, "remove") end },
+        } },
+        (not O.isWifiOn() and off > 0) and { kind = "text", text = _("Turn on Wi-Fi to download"), size = 11, dim = true } or nil,
+    } }
+    -- the queue
+    if Q then
+        local downloads = Q.entries()
+        local n = #downloads
+        local names = {}
+        for i = 1, math.min(3, n) do names[#names + 1] = shortTitle(downloads[i], 26) end
+        sections[#sections + 1] = { title = _("Queue"), colour = "teal", items = {
+            { kind = "text", text = n == 0 and _("Nothing waiting") or (n == 1 and _("1 book waiting for Wi-Fi") or T(_("%1 books waiting for Wi-Fi"), n)),
+              size = 15, bold = true },
+            n > 0 and { kind = "text", text = table.concat(names, ", ") .. (n > 3 and "…" or ""), size = 11, dim = true } or nil,
+            n > 0 and { kind = "pills", list = { { text = _("Download Now"), fill = true, colour = "teal",
+                enabled = O.isWifiOn() and not Q.running() and true or false, callback = function() Q.run(true) end } } } or nil,
+        } }
+    end
+    -- the space
+    local free = freeBytes()
+    if free then
+        sections[#sections + 1] = { title = _("Storage"), colour = "purple", items = {
+            { kind = "text", text = T(_("%1 free"), mb(free)), size = 15, bold = true },
+        } }
+    end
+    -- the items lists may have holes (nil for things not shown): close them up
+    for _i, s in ipairs(sections) do
+        local items = {}
+        for k = 1, 6 do if s.items[k] then items[#items + 1] = s.items[k] end end
+        s.items = items
+    end
+    O.Sheet.show{ title = _("Manage Downloads"), subtitle = T(_("%1 · %2"), levelLabel(level), free and T(_("%1 free"), mb(free)) or ""),
+        sections = sections, cancel = false }
 end
 
 return Bulk

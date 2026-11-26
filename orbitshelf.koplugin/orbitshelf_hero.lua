@@ -367,6 +367,8 @@ local function hookHero()
         HeroCard.onHold = function(self, ...)
             local book = self.book
             local extra = heroActionsFor(book)
+            -- 2.1.12: the sectioned sheet
+            if extra and #extra > 0 and O.bookSheet and O.bookSheet(book, { flash = O.cfg.flash_hold_menu }) then return true end
             if extra and #extra > 0 then
                 local ButtonDialog = require("ui/widget/buttondialog")
                 local dlg
